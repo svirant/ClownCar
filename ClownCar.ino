@@ -1,5 +1,5 @@
 /*
-* RT4K ClownCar v0.4
+* RT4K ClownCar v0.4a
 * Copyright(C) 2026 @Donutswdad
 *
 * This program is free software: you can redistribute it and/or modify
@@ -149,6 +149,8 @@ int gameDBSize = 11; // array can hold 1000 entries, but only set to current siz
 
 WebServer server(80);
 uint16_t gTime = 2000;
+void Clientloop(void *pvParameters);
+void GIDloop(void *pvParameters);
 
 void setup(){
 
@@ -183,15 +185,33 @@ void setup(){
   server.on("/getPayload", HTTP_GET, handleGetPayload);
 
   server.begin();  
+
+  xTaskCreate(Clientloop,"Clientloop",4096,NULL,1,NULL);
+  xTaskCreate(GIDloop,"GIDloop",4096,NULL,1,NULL);
 }  // end of setup
 
 void loop(){
-
-  readGameID();
-  server.handleClient();
-  usbHost.task();  // used for RT4K usb serial communications
-
+   // 
+   // leave empty
+   //
 }  // end of loop()
+
+void GIDloop(void *pvParameters){
+  (void)pvParameters;
+
+  for(;;){
+    readGameID();
+  }
+}  // end of GIDloop()
+
+void Clientloop(void *pvParameters){
+  (void)pvParameters;
+
+  for(;;){
+    server.handleClient();
+    usbHost.task();  // used for RT4K usb serial communications
+  }
+} // end of Clientloop()
 
 
 int fetchGameIDProf(String gameID,int dp){ // looks at gameDB for a gameID -> profile match
