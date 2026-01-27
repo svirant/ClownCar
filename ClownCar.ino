@@ -1,5 +1,5 @@
 /*
-* RT4K ClownCar v0.4b
+* RT4K ClownCar v0.4c
 * Copyright(C) 2026 @Donutswdad
 *
 * This program is free software: you can redistribute it and/or modify
@@ -111,14 +111,14 @@ struct Console {
                    //            1 means SVS profile 1
                    //           12 means SVS profile 12
                    //           etc...
-Console consoles[] = {{"PS1","http://ps1digital.local/gameid",-9,0,0,0,1}, // you can add more, but stay in this format
+Console consoles[10] = {{"PS1","http://ps1digital.local/gameid",-9,0,0,0,1}, // you can add more, but stay in this format
                       {"MemCardPro","http://10.0.1.53/api/currentState",-10,0,0,0,1},
                    // {"PS2","http://ps2digital.local/gameid",102,0,0,0,1}, // remove leading "//" to uncomment and enable ps2digital
                    // {"MCP","http://10.0.0.14/api/currentState",104,0,0,0,1}, // address format for MemCardPro. replace IP address with your MCP address
                       {"N64","http://n64digital.local/gameid",-7,0,0,0,1} // the last one in the list has no "," at the end
                       };
 
-int consolesSize = sizeof(consoles) / sizeof(consoles[0]); // length of consoles DB. can grow dynamically
+int consolesSize = 3; // Struct can hold 10 entries, but only set to current size so the UI doesnt show 7 blank entries :)
 
                    // If using a "remote button profile" for the "PROFILE" which are valued 1 - 12, place a "-" before the profile number. 
                    // Example: -1 means "remote button profile 1"
@@ -129,7 +129,7 @@ int consolesSize = sizeof(consoles) / sizeof(consoles[0]); // length of consoles
                    //           etc...
                    //                      
                                  // {"Description","<GAMEID>","PROFILE #"},
-String gameDB[1000][3] = {{"N64 EverDrive","00000000-00000000---00","7"}, // 7 is the "SVS PROFILE", would translate to a S7_<USER_DEFINED>.rt4 named profile under RT4K-SDcard/profile/SVS/
+String gameDB[500][3] = {{"N64 EverDrive","00000000-00000000---00","7"}, // 7 is the "SVS PROFILE", would translate to a S7_<USER_DEFINED>.rt4 named profile under RT4K-SDcard/profile/SVS/
                       {"xstation","XSTATION","8"},               // XSTATION is the <GAMEID>
                       {"GameCube","GM4E0100","505"},             // GameCube is the Description
                       {"N64 MarioKart 64","3E5055B6-2E92DA52-N-45","501"},
@@ -318,6 +318,14 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
     
             } // end of for()
           } // end of if()
+          int count = 0; // if all consoles in the list have been Disabled
+          for(int i=0;i < consolesSize;i++){
+            if(consoles[i].Enabled == 0) count++;
+          }
+          if(count == consolesSize && S0_pwr){
+            usbHost.cprof = String(S0_pwr_profile);
+            if(VGASerial)sendProfile(S0_pwr_profile);
+          }   
       } // end of if else()      
     }
     currentGameTime = 0;
@@ -400,11 +408,6 @@ void handleGetGameDB(){
 
 void saveGameDB(){
   File f = SPIFFS.open("/gameDB.json", FILE_WRITE);
-  if(!f){
-    Serial0.println(F("saveGameDB(): failed to open file"));
-    return;
-  }
-
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
 
@@ -425,13 +428,7 @@ void handleUpdateGameDB(){
     return;
   }
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, server.arg("plain"));
-  if(err){
-    server.send(400, "application/json", "{\"error\":\"Bad JSON\"}");
-    return;
-  }
-
+  JsonDocument doc; deserializeJson(doc, server.arg("plain"));
   JsonArray arr = doc.as<JsonArray>();
 
   gameDBSize = 0;
@@ -443,30 +440,14 @@ void handleUpdateGameDB(){
   }
 
   saveGameDB();
-
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 void loadGameDB(){
-  if(!SPIFFS.exists("/gameDB.json")){
-    Serial0.println(F("gameDB.json not found, using default"));
-    return; // keep your default array
-  }
-
   File f = SPIFFS.open("/gameDB.json", FILE_READ);
-  if(!f){
-    Serial0.println(F("Failed to open gameDB.json"));
-    return;
-  }
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, f);
+  JsonDocument doc; deserializeJson(doc, f);
   f.close();
-
-  if(err){
-    Serial0.println(F("Failed to parse gameDB.json"));
-    return;
-  }
 
   JsonArray arr = doc.as<JsonArray>();
   gameDBSize = 0;
@@ -476,13 +457,10 @@ void loadGameDB(){
     gameDB[gameDBSize][2] = item[2].as<String>();
     gameDBSize++;
   }
-
-  Serial0.println(F("gameDB loaded from SPIFFS"));
 }
 
 void saveConsoles(){
   File f = SPIFFS.open("/consoles.json", FILE_WRITE);
-  if(!f) return;
 
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
@@ -505,17 +483,11 @@ void handleUpdateConsoles(){
     return;
   }
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, server.arg("plain"));
-  if(err){
-    server.send(400, "application/json", "{\"error\":\"Bad JSON\"}");
-    return;
-  }
+  JsonDocument doc; deserializeJson(doc, server.arg("plain"));
 
   JsonArray arr = doc.as<JsonArray>();
 
-  // Update consoles array in RAM
-  int newSize = 0;
+  int newSize = 0; // Update consoles array in RAM
   for(JsonObject obj : arr){
     consoles[newSize].Desc        = obj["Desc"].as<String>();
     consoles[newSize].Address     = obj["Address"].as<String>();
@@ -525,9 +497,7 @@ void handleUpdateConsoles(){
   }
   consolesSize = newSize;
 
-  // Persist to SPIFFS
-  saveConsoles();
-
+  saveConsoles(); // save to SPIFFS
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
@@ -549,23 +519,11 @@ void handleUpdateS0Vars(){
     return;
   }
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, server.arg("plain"));
+  JsonDocument doc; deserializeJson(doc, server.arg("plain"));
 
-  if(err){
-    server.send(400, "text/plain", "Bad JSON");
-    return;
-  }
-
-  if(doc["S0_gameID"].is<bool>()){
-    S0_gameID = doc["S0_gameID"].as<bool>();
-  }
-  if(doc["S0_pwr"].is<bool>()){
-    S0_pwr = doc["S0_pwr"].as<bool>();
-  }
-  if(doc["S0_pwr_profile"].is<int>()){
-    S0_pwr_profile = doc["S0_pwr_profile"].as<int>();
-  }
+  S0_gameID = doc["S0_gameID"].as<bool>();
+  S0_pwr = doc["S0_pwr"].as<bool>();
+  S0_pwr_profile = doc["S0_pwr_profile"].as<int>();
 
   saveS0Vars();
   server.send(200, "text/plain", "OK");
@@ -579,37 +537,20 @@ void saveS0Vars(){
   doc["S0_pwr_profile"] = S0_pwr_profile;
 
   File f = SPIFFS.open("/s0vars.json", FILE_WRITE);
-  if(!f) return;
 
   serializeJson(doc, f);
   f.close();
 }
 
 void loadS0Vars(){
-  if(!SPIFFS.exists("/s0vars.json")){
-    Serial0.println(F("S0 vars not found, using defaults"));
-    return;
-  }
-
   File f = SPIFFS.open("/s0vars.json", FILE_READ);
-  if(!f) return;
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, f);
+  JsonDocument doc; deserializeJson(doc, f);
   f.close();
 
-  if(err){
-    Serial0.println(F("Failed to parse S0 JSON"));
-    return;
-  }
-
-  if(doc["S0_gameID"].is<bool>())
-    S0_gameID = doc["S0_gameID"].as<bool>();
-  if(doc["S0_pwr"].is<bool>())
-    S0_pwr = doc["S0_pwr"].as<bool>();
-  if(doc["S0_pwr_profile"].is<int>())
-    S0_pwr_profile = doc["S0_pwr_profile"].as<int>();
-
+  S0_gameID = doc["S0_gameID"].as<bool>();
+  S0_pwr = doc["S0_pwr"].as<bool>();
+  S0_pwr_profile = doc["S0_pwr_profile"].as<int>();
 }
 
 void handleGetS0Vars(){
@@ -625,11 +566,10 @@ void handleGetS0Vars(){
 }
 
 void loadConsoles(){
-    if(!SPIFFS.exists("/consoles.json")) return;
     File f = SPIFFS.open("/consoles.json", FILE_READ);
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc,f);
-    if(err){ f.close(); return; }
+
+    JsonDocument doc; deserializeJson(doc,f);
+
     JsonArray arr = doc.as<JsonArray>();
     consolesSize = 0;
     for(JsonObject obj: arr){
@@ -663,7 +603,64 @@ void handleRoot() {
       h2, h3 { text-align: center; }
       .controls { text-align: center; }
       .arrow { font-size: 0.8em; margin-left: 4px; color: #555; }
-      .s0-row { background-color: #f0f0f0; font-weight: bold; }
+      .s0-row { background-color: #eee; font-weight: bold; }
+      .s0-row td:nth-last-child(-n+3) {
+        background-color: white;
+        border: none;
+      }
+      /* ---------- TOOLTIP SYSTEM ---------- */
+      .tooltip {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        cursor: help;
+      }
+
+      .tooltip .tooltip-bubble {
+        position: absolute;
+        z-index: 20;
+        min-width: 180px;
+        max-width: 280px;
+
+        background: #2f2f2f;
+        color: #fff;
+        padding: 6px 10px;
+        border-radius: 6px;
+
+        font-size: 0.85em;
+        line-height: 1.3;
+        text-align: center;
+
+        opacity: 0;
+        visibility: hidden;
+        transform: translate(-50%, -4px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+
+        left: 50%;
+        bottom: 125%;
+        pointer-events: none;
+      }
+
+      /* show on hover + keyboard focus */
+      .tooltip:hover .tooltip-bubble,
+      .tooltip:focus-within .tooltip-bubble {
+        opacity: 1;
+        visibility: visible;
+        transform: translate(-50%, -8px);
+      }
+
+      /* arrow */
+      .tooltip .tooltip-bubble::after {
+        content: "";
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-width: 6px;
+        border-style: solid;
+        border-color: #2f2f2f transparent transparent transparent;
+      }
+
     </style>
   </head>
   <body>
@@ -672,19 +669,55 @@ void handleRoot() {
 
   <div class="controls">
     <button onclick="addConsole()">Add Console</button>
-    <button onclick="addProfile()">Add Profile</button>
+    <span class="tooltip">
+      <button onclick="addProfile()">
+        Add Profile
+      </button>
+      <span class="tooltip-bubble">
+      Will populate gameID if found.
+      </span>
+    </span>
   </div>
 
   <h2>Consoles</h2>
   <table id="consoleTable">
     <thead>
       <tr>
-        <th>Enabled</th>
-        <th>Description</th>
-        <th>Address</th>
         <th>
-          No Match Profile
-          <input type="checkbox" id="S0_gameID" style="margin-left:5px;"
+          <span class="tooltip" tabindex="0">
+            Enabled
+            <span class="tooltip-bubble">
+            gameID is checked by looping through "Enabled" Consoles. 
+            There is a 2 second pause after each loop.
+            </span>
+          </span>
+        </th>
+        <th>
+          <span class="tooltip" tabindex="0">
+            Description
+            <span class="tooltip-bubble">
+            Any name or description can be used.
+            </span>
+          </span>
+        </th>
+        <th>
+          <span class="tooltip" tabindex="0">
+            Address
+            <span class="tooltip-bubble">
+            Will automatically get converted to IP if Domain based, in order to timeout after a 2 second gameID query.
+            </span>
+          </span>
+        </th>
+        <th>
+          <span class="tooltip" tabindex="0">
+            No Match Profile
+            <span class="tooltip-bubble">
+            Profile used when a gameDB entry is not found.
+            </span>
+          </span>
+          <input type="checkbox" 
+                 id="S0_gameID" 
+                 style="margin-left:5px;"
                  onchange="updateS0GameID(this)">
         </th>
         <th>Action</th>
@@ -697,9 +730,25 @@ void handleRoot() {
   <table id="profileTable">
     <thead>
       <tr>
-        <th onclick="sortProfiles(0)">Name <span class="arrow" id="arrow0">▲▼</span></th>
+        <th onclick="sortProfiles(0)">
+          <span class="tooltip" tabindex="0">
+            Name
+            <span class="tooltip-bubble">
+            Any name or description can be used
+            </span>
+          </span>
+          <span class="arrow" id="arrow0">▲▼</span>
+        </th>
         <th onclick="sortProfiles(1)">gameID <span class="arrow" id="arrow1">▲▼</span></th>
-        <th onclick="sortProfiles(2)">Profile # <span class="arrow" id="arrow2">▲▼</span></th>
+        <th onclick="sortProfiles(2)">
+          <span class="tooltip" tabindex="0">
+            Profile #
+            <span class="tooltip-bubble">
+            Negative numbers represent a Remote Button Profile. Positive are SVS.
+            </span>
+          </span>
+          <span class="arrow" id="arrow2">▲▼</span>
+        </th>
         <th>Action</th>
       </tr>
     </thead>
@@ -800,7 +849,7 @@ void handleRoot() {
       const tdDel = document.createElement('td');
       const delBtn = document.createElement('button'); 
       delBtn.textContent = 'Delete';
-      delBtn.onclick = async () => deleteConsole(idx); 
+      delBtn.onclick = () => deleteConsole(idx); 
       tdDel.appendChild(delBtn); 
       tr.appendChild(tdDel);
 
@@ -808,7 +857,7 @@ void handleRoot() {
     });
 
     // --------- S0 row ----------
-    const trS0 = document.createElement('tr'); 
+    const trS0 = document.createElement('tr');
     trS0.className = 's0-row';
 
     const tdEnableS0 = document.createElement('td');
@@ -825,7 +874,7 @@ void handleRoot() {
 
     const tdDescS0 = document.createElement('td');
     const labelSpan = document.createElement('span');
-    labelSpan.textContent = "All Powered Off Profile: ";
+    labelSpan.textContent = "All Powered Off or Disabled Profile: ";
     labelSpan.style.fontWeight = '500';
     tdDescS0.appendChild(labelSpan);
 
@@ -834,7 +883,7 @@ void handleRoot() {
     s0profile.id = 'S0_pwr_profile';
     s0profile.value = S0Vars['S0_pwr_profile'] || 0;
     s0profile.disabled = !s0cb.checked;
-    s0profile.style.width = '10%';
+    s0profile.style.width = '45%';
     s0profile.onchange = async () => { 
       S0Vars['S0_pwr_profile'] = parseInt(s0profile.value) || 0; 
       saveS0Vars(); 
@@ -852,15 +901,14 @@ void handleRoot() {
     tbody.appendChild(trS0);
   }
 
-  async function saveConsoles(){
+  async function saveConsoles() {
     await fetch('/updateConsoles', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(consoles)
     });
   }
 
-  async function addConsole(){
+  async function addConsole() {
     consoles.push({
       Desc: "Console Name",
       Address: "http://",
@@ -956,7 +1004,7 @@ void handleRoot() {
     updateArrows();
   }
 
-    async function addProfile(){ 
+    async function addProfile() { 
     const response=await fetch("/getPayload"); 
     const payload=await response.text(); 
     gameProfiles.unshift(["CurrentGame",payload,"999"]); 
@@ -980,31 +1028,46 @@ void handleRoot() {
   }
 
   // ---------------- SORTING ----------------
-  function sortProfiles(col){ if(currentSortCol===col)
-  { currentSortDir=currentSortDir==='asc'?'desc':'asc'; } 
-  else { currentSortCol=col; currentSortDir='asc'; }
-    gameProfiles.sort((a,b)=>{ let va=a[col], vb=b[col]; 
-    if(!isNaN(va)&&!isNaN(vb)){ va=Number(va); vb=Number(vb); } 
-    else { va=va.toString().toLowerCase(); vb=vb.toString().toLowerCase(); } 
-    if(va<vb)return currentSortDir==='asc'?-1:1; 
-    if(va>vb)return currentSortDir==='asc'?1:-1; return 0; });
+  function sortProfiles(col) { 
+    if(currentSortCol===col) { 
+      currentSortDir=currentSortDir==='asc'?'desc':'asc'; 
+    } else { 
+      currentSortCol=col; 
+      currentSortDir='asc'; 
+    }
+    gameProfiles.sort((a,b) => { 
+      let va = a[col], vb = b[col]; 
+      if( !isNaN(va) && !isNaN(vb) ) { 
+        va = Number(va); 
+        vb = Number(vb); 
+      } else { 
+        va = va.toString().toLowerCase(); 
+        vb = vb.toString().toLowerCase(); 
+      } 
+      if (va < vb) return currentSortDir === 'asc'?-1:1; 
+      if (va > vb) return currentSortDir === 'asc'?1:-1; 
+      return 0; 
+    });
     renderProfiles(); 
     updateArrows();
   }
-  function updateArrows(){ for(let i=0;i<3;i++){ 
-    const arrow=document.getElementById('arrow'+i); 
-    arrow.textContent=(i===currentSortCol)?(currentSortDir==='asc'?'▲':'▼'):'▲▼'; } }
+
+  function updateArrows() {
+    for (let i = 0; i < 3; i++) { 
+      const arrow=document.getElementById('arrow' + i); 
+      arrow.textContent = (i===currentSortCol)?(currentSortDir==='asc'?'▲':'▼'):'▲▼'; 
+    }
+  }
 
   // ---------------- S0 HANDLERS ----------------
-  function updateS0GameID(cb){ 
-    S0Vars['S0_gameID']=cb.checked; 
+  function updateS0GameID(cb) { 
+    S0Vars['S0_gameID'] = cb.checked; 
     saveS0Vars(); 
   }
 
-  function saveS0Vars(){ 
+  function saveS0Vars() { 
     fetch('/updateS0Vars',{
       method:'POST',
-      headers:{'Content-Type':'application/json'},
       body:JSON.stringify(S0Vars)
     }); 
   }
