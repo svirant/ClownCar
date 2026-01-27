@@ -1,5 +1,5 @@
 /*
-* RT4K ClownCar v0.4c
+* RT4K ClownCar v0.4d
 * Copyright(C) 2026 @Donutswdad
 *
 * This program is free software: you can redistribute it and/or modify
@@ -21,7 +21,6 @@
 #include <WebServer.h>
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
-#include <Arduino_JSON.h>
 #include <ESPmDNS.h>
 #include <EspUsbHostSerial_FTDI.h> // https://github.com/wakwak-koba/EspUsbHost in order to have FTDI support for the RT4K usb serial port, this is the easist method.
                                    // Step 1 - Goto the github link above. Click the GREEN "<> Code" box and "Download ZIP"
@@ -244,10 +243,11 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
           if(httpCode == HTTP_CODE_OK){        // console is healthy // HTTP header has been sent and Server response header has been handled
             consoles[i].Address = replaceDomainWithIP(consoles[i].Address); // replace Domain with IP in consoles array. this allows setConnectTimeout to be honored
             payload = http.getString();        
-            JSONVar MCPjson = JSON.parse(payload); // 
-            if(JSON.typeof(MCPjson) != "undefined"){ // If the response is JSON, continue
-              if(MCPjson.hasOwnProperty("gameID")){  // If JSON contains gameID, reset payload to it's value
-                payload = (const char*) MCPjson["gameID"];
+            JsonDocument doc; 
+            DeserializationError error = deserializeJson(doc, payload);
+            if(!error){ // If the response is JSON, continue
+              if(!doc["gameID"].isNull()) {  // If payload contains gameID, 
+                payload = doc["gameID"].as<String>(); // reset payload to it's value
               }
             }
             result = fetchGameIDProf(payload,consoles[i].DefaultProf);
@@ -319,8 +319,8 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
             } // end of for()
           } // end of if()
           int count = 0; // if all consoles in the list have been Disabled
-          for(int i=0;i < consolesSize;i++){
-            if(consoles[i].Enabled == 0) count++;
+          for(int m=0;m < consolesSize;m++){
+            if(consoles[m].Enabled == 0) count++;
           }
           if(count == consolesSize && S0_pwr){
             usbHost.cprof = String(S0_pwr_profile);
