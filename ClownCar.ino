@@ -1,5 +1,5 @@
 /*
-* RT4K ClownCar v0.4d
+* RT4K ClownCar v0.4e
 * Copyright(C) 2026 @Donutswdad
 *
 * This program is free software: you can redistribute it and/or modify
@@ -19,7 +19,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <EspUsbHostSerial_FTDI.h> // https://github.com/wakwak-koba/EspUsbHost in order to have FTDI support for the RT4K usb serial port, this is the easist method.
@@ -112,8 +112,6 @@ struct Console {
                    //           etc...
 Console consoles[10] = {{"PS1","http://ps1digital.local/gameid",-9,0,0,0,1}, // you can add more, but stay in this format
                       {"MemCardPro","http://10.0.1.53/api/currentState",-10,0,0,0,1},
-                   // {"PS2","http://ps2digital.local/gameid",102,0,0,0,1}, // remove leading "//" to uncomment and enable ps2digital
-                   // {"MCP","http://10.0.0.14/api/currentState",104,0,0,0,1}, // address format for MemCardPro. replace IP address with your MCP address
                       {"N64","http://n64digital.local/gameid",-7,0,0,0,1} // the last one in the list has no "," at the end
                       };
 
@@ -140,7 +138,7 @@ String gameDB[500][3] = {{"N64 EverDrive","00000000-00000000---00","7"}, // 7 is
                       {"MegaDrive","MegaDrive","506"},
                       {"SoR2","Streets of Rage 2 (USA)","507"}};
 
-int gameDBSize = 11; // array can hold 1000 entries, but only set to current size so the UI doesnt show 989 blank entries :)
+uint16_t gameDBSize = 11; // array can hold 1000 entries, but only set to current size so the UI doesnt show 989 blank entries :)
 
 // WiFi config is just below
 
@@ -165,8 +163,8 @@ void setup(){
   analogWrite(LED_GREEN,255);
   analogWrite(LED_BLUE,255);
   MDNS.begin("clowncar");
-  if(!SPIFFS.begin(true)){
-    Serial0.println(F("SPIFFS mount failed!"));
+  if(!LittleFS.begin(true)){ // format if mount fails
+    Serial.println(F("LittleFS mount failed!"));
     return;
   }
 
@@ -318,14 +316,14 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
     
             } // end of for()
           } // end of if()
-          int count = 0; // if all consoles in the list have been Disabled
-          for(int m=0;m < consolesSize;m++){
-            if(consoles[m].Enabled == 0) count++;
-          }
-          if(count == consolesSize && S0_pwr){
-            usbHost.cprof = String(S0_pwr_profile);
-            if(VGASerial)sendProfile(S0_pwr_profile);
-          }   
+          // int count = 0; // if all consoles in the list have been Disabled
+          // for(int m=0;m < consolesSize;m++){
+          //   if(consoles[m].Enabled == 0) count++;
+          // }
+          // if(count == consolesSize && S0_pwr){
+          //   usbHost.cprof = String(S0_pwr_profile);
+          //   if(VGASerial)sendProfile(S0_pwr_profile);
+          // }   
       } // end of if else()      
     }
     currentGameTime = 0;
@@ -407,7 +405,7 @@ void handleGetGameDB(){
 }
 
 void saveGameDB(){
-  File f = SPIFFS.open("/gameDB.json", FILE_WRITE);
+  File f = LittleFS.open("/gameDB.json", FILE_WRITE);
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
 
@@ -444,7 +442,8 @@ void handleUpdateGameDB(){
 }
 
 void loadGameDB(){
-  File f = SPIFFS.open("/gameDB.json", FILE_READ);
+  if(!LittleFS.exists("/gameDB.json")) return; // if file does not exist yet, load from .ino
+  File f = LittleFS.open("/gameDB.json", FILE_READ);
 
   JsonDocument doc; deserializeJson(doc, f);
   f.close();
@@ -460,7 +459,7 @@ void loadGameDB(){
 }
 
 void saveConsoles(){
-  File f = SPIFFS.open("/consoles.json", FILE_WRITE);
+  File f = LittleFS.open("/consoles.json", FILE_WRITE);
 
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
@@ -497,7 +496,7 @@ void handleUpdateConsoles(){
   }
   consolesSize = newSize;
 
-  saveConsoles(); // save to SPIFFS
+  saveConsoles(); // save to LittleFS
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
@@ -536,14 +535,15 @@ void saveS0Vars(){
   doc["S0_pwr"] = S0_pwr;
   doc["S0_pwr_profile"] = S0_pwr_profile;
 
-  File f = SPIFFS.open("/s0vars.json", FILE_WRITE);
+  File f = LittleFS.open("/s0vars.json", FILE_WRITE);
 
   serializeJson(doc, f);
   f.close();
 }
 
 void loadS0Vars(){
-  File f = SPIFFS.open("/s0vars.json", FILE_READ);
+  if (!LittleFS.exists("/s0vars.json")) return; // if file does not exist yet, load from .ino
+  File f = LittleFS.open("/s0vars.json", FILE_READ);
 
   JsonDocument doc; deserializeJson(doc, f);
   f.close();
@@ -566,20 +566,21 @@ void handleGetS0Vars(){
 }
 
 void loadConsoles(){
-    File f = SPIFFS.open("/consoles.json", FILE_READ);
+  if(!LittleFS.exists("/consoles.json")) return; // if file does not exist yet, load from .ino
+  File f = LittleFS.open("/consoles.json", FILE_READ);
 
-    JsonDocument doc; deserializeJson(doc,f);
+  JsonDocument doc; deserializeJson(doc,f);
 
-    JsonArray arr = doc.as<JsonArray>();
-    consolesSize = 0;
-    for(JsonObject obj: arr){
-        consoles[consolesSize].Desc = obj["Desc"].as<String>();
-        consoles[consolesSize].Address = obj["Address"].as<String>();
-        consoles[consolesSize].DefaultProf = obj["DefaultProf"].as<int>();
-        consoles[consolesSize].Enabled = obj["Enabled"].as<bool>();
-        consolesSize++;
-    }
-    f.close();
+  JsonArray arr = doc.as<JsonArray>();
+  consolesSize = 0;
+  for(JsonObject obj: arr){
+      consoles[consolesSize].Desc = obj["Desc"].as<String>();
+      consoles[consolesSize].Address = obj["Address"].as<String>();
+      consoles[consolesSize].DefaultProf = obj["DefaultProf"].as<int>();
+      consoles[consolesSize].Enabled = obj["Enabled"].as<bool>();
+      consolesSize++;
+  }
+  f.close();
 }
 
 void handleGetPayload(){
@@ -874,7 +875,7 @@ void handleRoot() {
 
     const tdDescS0 = document.createElement('td');
     const labelSpan = document.createElement('span');
-    labelSpan.textContent = "All Powered Off or Disabled Profile: ";
+    labelSpan.textContent = "All Powered Off Profile: ";
     labelSpan.style.fontWeight = '500';
     tdDescS0.appendChild(labelSpan);
 
