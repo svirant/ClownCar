@@ -8,6 +8,8 @@ Clown Car is an Arduino Nano ESP32 + OTG adapter that changes profiles for the R
 See it in action: https://youtu.be/ldbfFbKzjh8
 <br /><br />
 ## Updates
+  - New Web UI!
+    - [Follow steps below to setup.](https://github.com/svirant/ClownCar/#additional-steps-for-latest-version-of-clowncarino)
   - Detection rates have been sped up!
     - Unpowered consoles that are DNS address based, timeout after 7 seconds. This is reduced to 2 seconds after a console's first power up.
       - console DNS addresses will be automatically replaced by IP in order for the 2 second timeout to work.
@@ -59,9 +61,34 @@ I recommend the [Official Arduino IDE and guide](https://www.arduino.cc/en/Guide
  - You will see the <code style="color : green">GREEN</code> led strobe if successful.
  - TLDR is: Because ClownCar takes over the usb port, this resets that.
 
-## General Setup
+## Additional steps for latest version of ClownCar.ino
+Requires you to short the B1 and Gnd pins during one of the steps. This method is the best I got at the moment.
 
-*** At the moment it takes about 25 seconds to "boot". Just be aware when you don't see any activity at first. ***
+1. "double click" the physical RST button right after connecting to your PC/Mac to put into "bootloader mode". You'll see the green led strobe if successful.
+2. Open up the ClownCar.ino in the Arduino IDE
+3. In Arduino IDE, under the "Tools" menu, make sure..
+- Board - "Arduino Nano ESP32" selected
+- Port - The listed "Serial" port is chosen, not dfu one.
+- Partition Scheme - "With SPIFFS partition (advanced)" is chosen
+- Pin Numbering - "By Arduino pin (default)"
+- USB Mode - "Normal mode (TinyUSB)"
+- Programmer  - "Esptool" is selected
+4. Select the last option in "Tools" menu. "Burn Bootloader"
+5. THIS WILL FAIL the first time. Wait about 15 seconds and then go back and select the new "Serial" port that is available and select "Burn Bootloader" again. 
+6. This should successfully burn the bootloader and now your board will have a half red/blue led that is lit.
+7. Disconnect the usb cable and short the B1 pin with the Gnd pin next to it. I used some metal tweezers.
+<img width="322" height="480" alt="Image" src="https://github.com/user-attachments/assets/5787fe6e-1e16-4092-8a72-68d8a5f2703f" />
+
+8. With B1 and Gnd shorted, reconnect the usb cable and the led should now be a solid Green.
+9. Return to the Arduino IDE and select "Sketch", "Upload Using Programmer". Make sure to use THIS option and NOT the normal "Upload" option.
+10. If successful, the sketch will compile and upload leaving you with a message "Hard resetting via RTS pin..."
+11. Disconnect the usb cable and remove the short on B1 and Gnd.
+12. Upon reconnecting the usb cable your board should **Successfully boot ClownCar**. You should see the blue led return indicating it's connected to WiFi and looking for addresses to connect to. If the blue led does not return, press the RST button and/or make sure you have your WiFi settings correctly entered. Remember, only 2.4GHz wifi is supported.
+13. For all future changes/uploads...
+- The board will always need to be in "bootloader" mode by "double clicking" the RST button right after connecting the usb cable. 
+- You can also now return to using the normal "Sketch" -> "Upload" option.
+
+## General Setup
 
 For consoles list, quickest if IP address is used versus Domain address:
   - Ex: http://10.0.1.10/gameid vs http://ps1digital.local/gameid 
@@ -79,6 +106,8 @@ Go to: https://github.com/wakwak-koba/EspUsbHost
 <br />
 
 ## Adding gameIDs, Consoles, and other Options
+
+The new Web UI allows you to live update the Consoles and gameID table. You no longer have to reflash for changes. An export/import feature is on the radar so web ui changes can be saved.
 
 Edit the .ino file to include your gameID addresses and gameID to SVS profile matches. Chances are if this isn't done correctly, it won't compile... which is a good way to find out. :)
 ```
