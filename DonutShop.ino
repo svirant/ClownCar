@@ -1,5 +1,5 @@
 /*
-* RT4K ClownCar v0.4j
+* RT4K DonutShop v0.4k
 * Copyright(C) 2026 @Donutswdad
 *
 * This program is free software: you can redistribute it and/or modify
@@ -162,7 +162,7 @@ void setup(){
   pinMode(LED_BLUE, OUTPUT); // BLUE led is a WiFi activity. Long periods of blue means one of the gameID servers is not connecting.
   analogWrite(LED_GREEN,255);
   analogWrite(LED_BLUE,255);
-  MDNS.begin("clowncar");
+  MDNS.begin("donutshop");
   if(!LittleFS.begin(true)){ // format if mount fails
     Serial.println(F("LittleFS mount failed!"));
     return;
@@ -667,7 +667,7 @@ void handleExportAll() {
 
   String out;
   serializeJsonPretty(doc, out);
-  server.sendHeader("Content-Disposition", "attachment; filename=clowncar_config.json");
+  server.sendHeader("Content-Disposition", "attachment; filename=donutshop_config.json");
   server.send(200, "application/json", out);
 }
 
@@ -679,7 +679,7 @@ void handleRoot() {
   <html>
   <head>
     <meta charset="utf-8">
-    <title>Clown Car</title>
+    <title>Donut Shop</title>
     <style>
       body { font-family: sans-serif; }
       table { border-collapse: collapse; width: 80%; margin: 20px auto; }
@@ -801,7 +801,7 @@ void handleRoot() {
       <button onclick="document.getElementById('importJson').click()">Import Config</button>
       <button onclick="exportData()">Export Config</button>
     </div>
-  <center><h1>Clown Car</h1></center>
+  <center><h1>Donut Shop</h1></center>
 
   <div class="controls">
     <button onclick="addConsole()">Add Console</button>

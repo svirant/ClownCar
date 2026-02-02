@@ -1,16 +1,16 @@
-# ClownCar
-Clown Car is an Arduino Nano ESP32 + OTG adapter that changes profiles for the RT4K based on gameID. <br />
+# DonutShop
+Donut Shop is an Arduino Nano ESP32 + OTG adapter that changes profiles for the RT4K based on gameID. <br />
 
-<img src="./images/ccdemo.JPG">
+<img src="./images/dsdemo.JPG">
 
-<p align="center"><img width="500" src="./images/1cc.JPG"></p><br />
+<p align="center"><img width="500" src="./images/1ds.JPG"></p><br />
 
 
 See it in action: https://youtu.be/ldbfFbKzjh8
 <br /><br />
 ## Updates
   - New Web UI!
-    - [Follow steps below to setup.](https://github.com/svirant/ClownCar/#additional-steps-for-latest-version-of-clowncarino)
+    - [Follow steps below to setup.](https://github.com/svirant/DonutShop/#additional-steps-for-latest-version-of-donutshopino)
   - Detection rates have been sped up!
     - Unpowered consoles that are DNS address based, timeout after 7 seconds. This is reduced to 2 seconds after a console's first power up.
       - console DNS addresses will be automatically replaced by IP in order for the 2 second timeout to work.
@@ -60,13 +60,13 @@ I recommend the [Official Arduino IDE and guide](https://www.arduino.cc/en/Guide
 **To put the Nano ESP32 into programming mode** 
  - Double-click the button on top right after connecting the usb-c cable. (or triple-click w/o disconnecting)
  - You will see the <code style="color : green">GREEN</code> led strobe if successful.
- - TLDR is: Because ClownCar takes over the usb port, this resets that.
+ - TLDR is: Because DonutShop takes over the usb port, this resets that.
 
-## Additional steps for latest version of ClownCar.ino
+## Additional steps for latest version of DonutShop.ino
 Requires you to short the B1 and Gnd pins during one of the steps. This method is the best I got at the moment.
 
 1. "double click" the physical RST button right after connecting to your PC/Mac to put into "bootloader mode". You'll see the green led strobe if successful.
-2. Open up the ClownCar.ino in the Arduino IDE
+2. Open up the DonutShop.ino in the Arduino IDE
 3. In Arduino IDE, under the "Tools" menu, make sure..
 - Board - "Arduino Nano ESP32" selected
 - Port - The listed "Serial" port is chosen, not dfu one.
@@ -78,13 +78,13 @@ Requires you to short the B1 and Gnd pins during one of the steps. This method i
 5. THIS WILL FAIL the first time. Wait about 15 seconds and then go back and select the new "Serial" port that is available and select "Burn Bootloader" again. 
 6. This should successfully burn the bootloader and now your board will have a half red/blue led that is lit.
 7. Disconnect the usb cable and short the B1 pin with the Gnd pin next to it. I used some metal tweezers.
-<img width="322" height="480" alt="Image" src="./images/2cc.JPG" />
+<img width="322" height="480" alt="Image" src="./images/2ds.JPG" />
 
 8. With B1 and Gnd shorted, reconnect the usb cable and the led should now be a solid Green.
 9. Return to the Arduino IDE and select "Sketch", "Upload Using Programmer". Make sure to use THIS option and NOT the normal "Upload" option.
 10. If successful, the sketch will compile and upload leaving you with a message "Hard resetting via RTS pin..."
 11. Disconnect the usb cable and remove the short on B1 and Gnd.
-12. Upon reconnecting the usb cable your board should **Successfully boot ClownCar**. You should see the blue led return indicating it's connected to WiFi and looking for addresses to connect to. If the blue led does not return, press the RST button and/or make sure you have your WiFi settings correctly entered. Remember, only 2.4GHz wifi is supported.
+12. Upon reconnecting the usb cable your board should **Successfully boot DonutShop**. You should see the blue led return indicating it's connected to WiFi and looking for addresses to connect to. If the blue led does not return, press the RST button and/or make sure you have your WiFi settings correctly entered. Remember, only 2.4GHz wifi is supported.
 13. For all future changes/uploads...
 - The board will always need to be in "bootloader" mode by "double clicking" the RST button right after connecting the usb cable. 
 - You can also now return to using the normal "Sketch" -> "Upload" option.
@@ -95,9 +95,9 @@ For consoles list, quickest if IP address is used versus Domain address:
   - Ex: http://10.0.1.10/gameid vs http://ps1digital.local/gameid 
 
 <br />
-If you have multiple consoles on when ClownCar is booting, the console furthest down the list wins. If more than 2 consoles are active when one is powered off, the console highest on the list takes over.
+If you have multiple consoles on when DonutShop is booting, the console furthest down the list wins. If more than 2 consoles are active when one is powered off, the console highest on the list takes over.
 
-There are a multiple moving parts with this setup, and if you have issues, please use the "ClownCar_usb-only-test.ino". More info in the troublehshooting section at the end.
+There are a multiple moving parts with this setup, and if you have issues, please use the "DonutShop_usb-only-test.ino". More info in the troublehshooting section at the end.
 
 #### I believe the only library you need to add is a fork of "EspUsbHost"
 Go to: https://github.com/wakwak-koba/EspUsbHost 
@@ -156,7 +156,7 @@ After that, confirm the following:
  - Have at least 1 address in the consoles db that you can access with a web browser
 
  If you are sure of these settings, and it still does not work, try the following to test the usb serial connection:
-  - Configure your Arduino Nano ESP32 with the provided "ClownCar_usb-only-test.ino". This is configured to only load "remote profile 8".
+  - Configure your Arduino Nano ESP32 with the provided "DonutShop_usb-only-test.ino". This is configured to only load "remote profile 8".
     - You can change the 8 to 1 - 9 if needed.
   - Verify that everything is connected with your OTG adapter and has power.
   - Press the reset button on top of the Arduino and within a couple of seconds it should load the remote profile.
