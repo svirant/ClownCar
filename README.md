@@ -94,7 +94,7 @@ For consoles list, quickest if IP address is used versus Domain address:
   - Ex: http://10.0.1.10/gameid vs http://ps1digital.local/gameid 
 
 <br />
-If you have multiple gameID consoles on when the ClownCar is booting, the console furthest down the "consoles" list wins. After that it keeps track of the order.
+If you have multiple consoles on when ClownCar is booting, the console furthest down the list wins. If more than 2 consoles are active when one is powered off, the console highest on the list takes over.
 
 There are a multiple moving parts with this setup, and if you have issues, please use the "ClownCar_usb-only-test.ino". More info in the troublehshooting section at the end.
 
@@ -109,6 +109,8 @@ Go to: https://github.com/wakwak-koba/EspUsbHost
 
 The new Web UI allows you to live update the Consoles and gameID table. You no longer have to reflash for changes. You can also now import and export your config if anything were to happen and you need to rebuild.
 
+The "S0" options are now configurable in the Web UI.
+
 ```
 /*
 ////////////////////
@@ -118,12 +120,19 @@ The new Web UI allows you to live update the Consoles and gameID table. You no l
 
 bool const VGASerial = false;    // Use onboard TX1 pin to send Serial Commands to RT4K.
 
-bool const S0_pwr = true;        // When all consoles defined below are off, S0_<whatever>.rt4 profile will load
+bool S0_pwr = false;        // Load "S0_pwr_profile" when all consoles defined below are off. Defined below.
 
-bool const S0_gameID = true;     // When a gameID match is not found for a powered on console, DefaultProf for that console will load
+int S0_pwr_profile = -12;    // When all consoles definied below are off, load this profile. set to 0 means that S0_<whatever>.rt4 profile will load.
+                                 // "S0_pwr" must be set true
+                                 //
+                                 // If using a "remote button profile" which are valued 1 - 12, place a "-" before the profile number. 
+                                 // Example: -1 means "remote button profile 1"
+                                 //          -12 means "remote button profile 12"
+
+bool S0_gameID = true;     // When a gameID match is not found for a powered on console, DefaultProf for that console will load
 ```
 ## WiFi setup
-WiFi is listed just below. **ONLY** compatible with **2.4GHz** WiFi APs. Replace SSID and password with your network's. Make sure to not leave out the "" "" quotes.
+**ONLY** compatible with **2.4GHz** WiFi APs. Replace SSID and password with your network's. Make sure to not leave out the " " quotes.
 ```
 WiFi.begin("SSID","password");
 ```
