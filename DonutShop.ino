@@ -1,5 +1,5 @@
 /*
-* RT4K DonutShop v0.4l
+* RT4K DonutShop v0.4m
 * Copyright(C) 2026 @Donutswdad
 *
 * This program is free software: you can redistribute it and/or modify
@@ -22,10 +22,18 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include <EspUsbHostSerial_FTDI.h> // https://github.com/wakwak-koba/EspUsbHost in order to have FTDI support for the RT4K usb serial port, this is the easist method.
                                    // Step 1 - Goto the github link above. Click the GREEN "<> Code" box and "Download ZIP"
                                    // Step 2 - In Arudino IDE; goto "Sketch" -> "Include Library" -> "Add .ZIP Library"
-                                  
+
+/////////////////////////////////////////////////// WIFI // WIFI // WIFI // WIFI /////////////////////////////////////////////////////////
+
+/**--- WIFI / setup ---**/
+const char* donuthostname = "donutshop";      // http://donutshop.local
+const char* ssid = "SSID";                    // Wifi Network goes here in quotes ""  Note: MUST be a 2.4GHz WiFi AP. 5GHz is NOT supported by the Nano ESP32.
+const char* password = "password";            // Wifi Credentials go here in quotes ""
+const char* updatepassword = "update123";     // password for updating firmware over Wifi via Arduino IDE 2.x`                                  
 
 /*
 ////////////////////
@@ -37,7 +45,7 @@ bool const VGASerial = false;    // Use onboard TX1 pin to send Serial Commands 
 
 bool S0_pwr = false;        // Load "S0_pwr_profile" when all consoles defined below are off. Defined below.
 
-int S0_pwr_profile = -12;    // When all consoles definied below are off, load this profile. set to 0 means that S0_<whatever>.rt4 profile will load.
+int S0_pwr_profile = 0;    // When all consoles definied below are off, load this profile. set to 0 means that S0_<whatever>.rt4 profile will load.
                                  // "S0_pwr" must be set true
                                  //
                                  // If using a "remote button profile" which are valued 1 - 12, place a "-" before the profile number. 
@@ -47,44 +55,11 @@ int S0_pwr_profile = -12;    // When all consoles definied below are off, load t
 bool S0_gameID = true;     // When a gameID match is not found for a powered on console, DefaultProf for that console will load
 
 
-//////////////////
-
-int currentProf = 32222;  // current SVS profile number, set high initially
-unsigned long currentGameTime = 0;
-unsigned long prevGameTime = 0;
-String payload = ""; 
-
-
-class SerialFTDI : public EspUsbHostSerial_FTDI {
-  public:
-  String cprof = "null";
-  String tcprof = "null";
-  virtual void task(void) override {
-    EspUsbHost::task();
-    if(this->isReady()){
-      usb_host_transfer_submit(this->usbTransfer_recv);
-      if(cprof != "null" && currentProf != cprof.toInt()){
-        currentProf = cprof.toInt();
-        analogWrite(LED_GREEN,222);
-        if(currentProf >= 0){
-          tcprof = "\rSVS NEW INPUT=" + cprof + "\r";
-          submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length());
-          delay(1000);
-          tcprof = "\rSVS CURRENT INPUT=" + cprof + "\r";
-        }
-        if(currentProf < 0){
-          tcprof = "\rremote prof" + String((-1)*currentProf) + "\r";
-          delay(1000); // only added so the green led stays lit for 1 second. not needed for "remote prof" command.
-        }
-        submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length());
-        analogWrite(LED_GREEN,255);
-
-      }
-    }
-  }
-};
-
-SerialFTDI usbHost;
+/*
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//    GAMEID CONFIG     //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*/
 
 struct Console {
   String Desc;
@@ -96,11 +71,6 @@ struct Console {
   bool Enabled;
 };
 
-/*
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//    CONFIG     //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-*/
                    // format as so: {console address, Default Profile for console, current profile state (leave 0), power state (leave 0), active state (leave 0)}
                    //
                    // If using a "remote button profile" for the "Default Profile" which are valued 1 - 12, place a "-" before the profile number. 
@@ -140,18 +110,54 @@ String gameDB[500][3] = {{"N64 EverDrive","00000000-00000000---00","7"}, // 7 is
 
 uint16_t gameDBSize = 11; // array can hold 1000 entries, but only set to current size so the UI doesnt show 989 blank entries :)
 
-// WiFi config is just below
+
+int currentProf = 32222;  // current SVS profile number, set high initially
+unsigned long currentGameTime = 0;
+unsigned long prevGameTime = 0;
+String payload = ""; 
+
+class SerialFTDI : public EspUsbHostSerial_FTDI {
+  public:
+  String cprof = "null";
+  String tcprof = "null";
+  virtual void task(void) override {
+    EspUsbHost::task();
+    if(this->isReady()){
+      usb_host_transfer_submit(this->usbTransfer_recv);
+      if(cprof != "null" && currentProf != cprof.toInt()){
+        currentProf = cprof.toInt();
+        analogWrite(LED_GREEN,222);
+        if(currentProf >= 0){
+          tcprof = "\rSVS NEW INPUT=" + cprof + "\r";
+          submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length());
+          delay(1000);
+          tcprof = "\rSVS CURRENT INPUT=" + cprof + "\r";
+        }
+        if(currentProf < 0){
+          tcprof = "\rremote prof" + String((-1)*currentProf) + "\r";
+          delay(1000); // only added so the green led stays lit for 1 second. not needed for "remote prof" command.
+        }
+        submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length());
+        analogWrite(LED_GREEN,255);
+
+      }
+    }
+  }
+};
+
+SerialFTDI usbHost;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 WebServer server(80);
+
 uint16_t gTime = 2000;
 void Clientloop(void *pvParameters);
 void GIDloop(void *pvParameters);
 
 void setup(){
 
-  WiFi.begin("SSID","password"); // WiFi creds go here. MUST be a 2.4GHz WiFi AP. 5GHz is NOT supported by the Nano ESP32.
+  WiFi.begin(ssid,password); // WiFi info is set at the top on line 34
   usbHost.begin(115200); // leave at 115200 for RT4K connection
   if(VGASerial){
     Serial0.begin(9600);
@@ -162,11 +168,12 @@ void setup(){
   pinMode(LED_BLUE, OUTPUT); // BLUE led is a WiFi activity. Long periods of blue means one of the gameID servers is not connecting.
   analogWrite(LED_GREEN,255);
   analogWrite(LED_BLUE,255);
-  MDNS.begin("donutshop");
+  MDNS.begin(donuthostname); // hostname configured at the top near line 34
   if(!LittleFS.begin(true)){ // format if mount fails
     Serial.println(F("LittleFS mount failed!"));
     return;
   }
+  OTAsetup();
 
   loadGameDB();
   loadConsoles();
@@ -184,7 +191,7 @@ void setup(){
   server.on("/importAll", HTTP_POST, handleImportAll);
 
 
-  server.begin();  
+  server.begin();
 
   xTaskCreate(Clientloop,"Clientloop",4096,NULL,1,NULL);
   xTaskCreate(GIDloop,"GIDloop",4096,NULL,1,NULL);
@@ -210,9 +217,25 @@ void Clientloop(void *pvParameters){
 
   for(;;){
     server.handleClient();
+    ArduinoOTA.handle();
   }
 } // end of Clientloop()
 
+void OTAsetup(){
+  ArduinoOTA.setHostname(donuthostname);
+  ArduinoOTA.setPassword(updatepassword);
+
+  ArduinoOTA
+    .onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("OTA Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("OTA Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("OTA Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("OTA Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("OTA End Failed");
+    });
+  ArduinoOTA.begin();
+} // end of OTAsetup()
 
 int fetchGameIDProf(String gameID,int dp){ // looks at gameDB for a gameID -> profile match
   for(int i = 0; i < gameDBSize; i++){      // returns "DefaultProf" for console if nothing found and S0_gameID = true
@@ -682,9 +705,25 @@ void handleRoot() {
       table { border-collapse: collapse; width: 80%; margin: 20px auto; }
       th, td { border: 1px solid #999; padding: 6px 10px; }
       th { background: #eee; cursor: pointer; user-select: none; }
-      input { width: 100%; }
+      input { width: 95%; }
       button { margin: 2px; }
       h2, h3 { text-align: center; }
+      #consoleTable td:first-child {
+        text-align: center;
+        width: 90px;
+      }
+      #consoleTable td:last-child,
+      #profileTable td:last-child {
+        width: 90px;
+        text-align: center;
+      }
+      #profileTable input {
+        display: block;
+        margin: 0 auto;
+        width: 97%;
+        text-align: left;
+      }
+
       .controls { text-align: center; }
       .arrow { font-size: 0.8em; margin-left: 4px; color: #555; }
       .s0-row { background-color: #eee; font-weight: bold; }
@@ -692,10 +731,7 @@ void handleRoot() {
         background-color: white;
         border: none;
       }
-      #consoleTable th:nth-child(3),
-      #consoleTable td:nth-child(3) {
-         width: 320px;
-      }
+
       .topbar {
         position: fixed;
         top: 0;
@@ -788,14 +824,84 @@ void handleRoot() {
         background-color: #4CAF50;
       }
 
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 42px;
+        height: 22px;
+        vertical-align: middle;
+      }
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background-color: #ccc;
+        transition: 0.25s;
+        border-radius: 22px;
+      }
+      .slider:before {
+        position: absolute;
+        content: "";
+        height: 18px;
+        width: 18px;
+        left: 2px;
+        bottom: 2px;
+        background-color: white;
+        transition: 0.25s;
+        border-radius: 50%;
+      }
+      .switch input:checked + .slider {
+        background-color: #4CAF50;
+      }
+      .switch input:checked + .slider:before {
+        transform: translateX(20px);
+      }
+      .topbar .tooltip .tooltip-bubble {
+        position: absolute;
+        bottom: -32px;
+        right: 0;
+        left: auto;
+        transform: translate(0, 0);
+        white-space: nowrap;
+        z-index: 50;
+        min-width: 20px;
+      }
+      .topbar .tooltip .tooltip-bubble::after {
+        content: "";
+        position: absolute;
+        top: -6px;
+        right: 6px;
+        left: auto;
+        border-width: 6px;
+        border-style: solid;
+        border-color: transparent transparent #2f2f2f transparent;
+      }
+      .topbar .tooltip {
+        cursor: default;
+        position: relative;
+      }
+
     </style>
   </head>
   <body>
-    <div class="topbar">
-      <input type="file" id="importJson" style="display:none" accept=".json" onchange="importData(event)">
-      <button onclick="document.getElementById('importJson').click()">Import Config</button>
-      <button onclick="exportData()">Export Config</button>
-    </div>
+
+  <div class="topbar" style="display:flex; justify-content:flex-end; gap:2px; background:white; padding:8px;">
+    <input type="file" id="importJson" style="display:none" accept=".json" onchange="importData(event)">
+    <button onclick="document.getElementById('importJson').click()">
+      <span class="tooltip">📂<span class="tooltip-bubble">Import Config</span>
+      </span>
+    </button>
+    <button onclick="exportData()">
+      <span class="tooltip">💾<span class="tooltip-bubble">Export Config</span>
+      </span>
+    </button>
+  </div>
+
   <center><h1>Donut Shop</h1></center>
   <div class="controls">
     <button onclick="addConsole()">Add Console</button>
@@ -845,10 +951,12 @@ void handleRoot() {
             Profile used when a gameDB entry is not found.
             </span>
           </span>
-          <input type="checkbox" 
-                 id="S0_gameID" 
-                 style="margin-left:5px;"
+          <label class="switch" style="margin-left:5px;">
+                 <input type="checkbox"
+                 id="S0_gameID"
                  onchange="updateS0GameID(this)">
+                 <span class="slider"></span>
+          </label>
         </th>
         <th>Action</th>
       </tr>
@@ -930,6 +1038,8 @@ void handleRoot() {
 
       // --- Enable checkbox column ---
       const tdEnable = document.createElement('td');
+      const label = document.createElement('label');
+      label.className = 'switch';
       const enableCheckbox = document.createElement('input');
       enableCheckbox.type = 'checkbox';
       enableCheckbox.checked = !!c.Enabled;
@@ -937,7 +1047,11 @@ void handleRoot() {
         consoles[idx].Enabled = enableCheckbox.checked;
         await saveConsoles(); 
       };
-      tdEnable.appendChild(enableCheckbox);
+      const slider = document.createElement('span');
+      slider.className = 'slider';
+      label.appendChild(enableCheckbox);
+      label.appendChild(slider);
+      tdEnable.appendChild(label);
       tr.appendChild(tdEnable);
 
       // --- Description ---
@@ -999,7 +1113,11 @@ void handleRoot() {
     const trS0 = document.createElement('tr');
     trS0.className = 's0-row';
 
+    // --- Enabled switch column ---
     const tdEnableS0 = document.createElement('td');
+    const label = document.createElement('label');
+    label.className = 'switch';
+
     const s0cb = document.createElement('input'); 
     s0cb.type='checkbox';
     s0cb.checked = !!S0Vars['S0_pwr'];
@@ -1008,33 +1126,49 @@ void handleRoot() {
       s0profile.disabled = !s0cb.checked; 
       saveS0Vars(); 
     };
-    tdEnableS0.appendChild(s0cb); 
+
+    const slider = document.createElement('span');
+    slider.className = 'slider';
+
+    label.appendChild(s0cb);
+    label.appendChild(slider);
+    tdEnableS0.appendChild(label);
     trS0.appendChild(tdEnableS0);
 
+    // --- Description + number input column ---
     const tdDescS0 = document.createElement('td');
+    tdDescS0.style.display = 'flex';
+    tdDescS0.style.alignItems = 'center';
+    tdDescS0.style.gap = '8px';
+    tdDescS0.style.whiteSpace = 'nowrap';
+
+    // label with tooltip
     const labelSpan = document.createElement('span');
     labelSpan.textContent = "All Powered Off Profile: ";
     labelSpan.classList.add('tooltip');
+
     const bubble = document.createElement('span');
     bubble.className = 'tooltip-bubble';
     bubble.textContent = "Must have at least 1 Enabled and unreachable. Disabled do not count.";
     labelSpan.appendChild(bubble);
     tdDescS0.appendChild(labelSpan);
 
+    // number input fills remaining space
     const s0profile = document.createElement('input'); 
     s0profile.type = 'number'; 
     s0profile.id = 'S0_pwr_profile';
     s0profile.value = S0Vars['S0_pwr_profile'] || 0;
     s0profile.disabled = !s0cb.checked;
-    s0profile.style.width = '45%';
+    s0profile.style.width = '40px';
     s0profile.onchange = async () => { 
       S0Vars['S0_pwr_profile'] = parseInt(s0profile.value) || 0; 
       saveS0Vars(); 
     };
-    tdDescS0.appendChild(s0profile); 
+    tdDescS0.appendChild(s0profile);
+
     trS0.appendChild(tdDescS0);
 
-    // fill empty tds for remaining columns
+    // --- fill remaining columns ---
     ['', '', ''].forEach(() => {
       const td = document.createElement('td');
       td.style.backgroundColor = 'white';
