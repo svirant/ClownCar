@@ -1,5 +1,5 @@
 /*
-* RT4K DonutShop v0.4m
+* RT4K DonutShop v0.4n
 * Copyright(C) 2026 @Donutswdad
 *
 * This program is free software: you can redistribute it and/or modify
@@ -43,17 +43,12 @@ const char* updatepassword = "update123";     // password for updating firmware 
 
 bool const VGASerial = false;    // Use onboard TX1 pin to send Serial Commands to RT4K.
 
-bool S0_pwr = false;        // Load "S0_pwr_profile" when all consoles defined below are off. Defined below.
-
-int S0_pwr_profile = 0;    // When all consoles definied below are off, load this profile. set to 0 means that S0_<whatever>.rt4 profile will load.
-                                 // "S0_pwr" must be set true
-                                 //
-                                 // If using a "remote button profile" which are valued 1 - 12, place a "-" before the profile number. 
-                                 // Example: -1 means "remote button profile 1"
-                                 //          -12 means "remote button profile 12"
+bool S0 = true;            // Load "S0_whatever.rt4" when all consoles defined below are off.
 
 bool S0_gameID = true;     // When a gameID match is not found for a powered on console, DefaultProf for that console will load
 
+#define MAX_CONSOLES 10
+#define MAX_GAMEDB 1000
 
 /*
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -80,7 +75,7 @@ struct Console {
                    //            1 means SVS profile 1
                    //           12 means SVS profile 12
                    //           etc...
-Console consoles[10] = {{"PS1","http://ps1digital.local/gameid",-9,0,0,0,1}, // you can add more, but stay in this format
+Console consoles[MAX_CONSOLES] = {{"PS1","http://ps1digital.local/gameid",-9,0,0,0,1}, // you can add more, but stay in this format
                       {"MemCardPro","http://10.0.1.52/api/currentState",-5,0,0,0,1},
                       {"N64","http://n64digital.local/gameid",-7,0,0,0,1} // the last one in the list has no "," at the end
                       };
@@ -96,7 +91,7 @@ int consolesSize = 3; // Struct can hold 10 entries, but only set to current siz
                    //           etc...
                    //                      
                                  // {"Description","<GAMEID>","PROFILE #"},
-String gameDB[500][3] = {{"N64 EverDrive","00000000-00000000---00","7"}, // 7 is the "SVS PROFILE", would translate to a S7_<USER_DEFINED>.rt4 named profile under RT4K-SDcard/profile/SVS/
+String gameDB[MAX_GAMEDB][3] = {{"N64 EverDrive","00000000-00000000---00","7"}, // 7 is the "SVS PROFILE", would translate to a S7_<USER_DEFINED>.rt4 named profile under RT4K-SDcard/profile/SVS/
                       {"xstation","XSTATION","8"},               // XSTATION is the <GAMEID>
                       {"GameCube","GM4E0100","505"},             // GameCube is the Description
                       {"N64 MarioKart 64","3E5055B6-2E92DA52-N-45","501"},
@@ -128,13 +123,13 @@ class SerialFTDI : public EspUsbHostSerial_FTDI {
         currentProf = cprof.toInt();
         analogWrite(LED_GREEN,222);
         if(currentProf >= 0){
-          tcprof = "\rSVS NEW INPUT=" + cprof + "\r";
+          tcprof = "\rSVS NEW INPUT=" + cprof + "\r\n";
           submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length());
           delay(1000);
-          tcprof = "\rSVS CURRENT INPUT=" + cprof + "\r";
+          tcprof = "\rSVS CURRENT INPUT=" + cprof + "\r\n";
         }
         if(currentProf < 0){
-          tcprof = "\rremote prof" + String((-1)*currentProf) + "\r";
+          tcprof = "\rremote prof" + String((-1)*currentProf) + "\r\n";
           delay(1000); // only added so the green led stays lit for 1 second. not needed for "remote prof" command.
         }
         submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length());
@@ -313,9 +308,9 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
           for(int m=0;m < consolesSize;m++){
             if(consoles[m].On == 0) count++;
           }
-          if(count == consolesSize && S0_pwr){
-            usbHost.cprof = String(S0_pwr_profile);
-            if(VGASerial)sendProfile(S0_pwr_profile);
+          if(count == consolesSize && S0){
+            usbHost.cprof = "0";
+            if(VGASerial)sendProfile(0);
           }   
         } // end of else()
       http.end();
@@ -346,9 +341,9 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
           // for(int m=0;m < consolesSize;m++){
           //   if(consoles[m].Enabled == 0) count++;
           // }
-          // if(count == consolesSize && S0_pwr){
-          //   usbHost.cprof = String(S0_pwr_profile);
-          //   if(VGASerial)sendProfile(S0_pwr_profile);
+          // if(count == consolesSize && S0){
+          //   usbHost.cprof = "0";
+          //   if(VGASerial)sendProfile(0);
           // }   
       } // end of if else()      
     }
@@ -547,8 +542,7 @@ void handleUpdateConsoles(){
 String embedS0Vars(){
   JsonDocument doc;
   doc["S0_gameID"] = S0_gameID;
-  doc["S0_pwr"] = S0_pwr;
-  doc["S0_pwr_profile"] = S0_pwr_profile;
+  doc["S0"] = S0;
 
   String json;
   serializeJson(doc, json);
@@ -565,8 +559,7 @@ void handleUpdateS0Vars(){
   JsonDocument doc; deserializeJson(doc, server.arg("plain"));
 
   S0_gameID = doc["S0_gameID"].as<bool>();
-  S0_pwr = doc["S0_pwr"].as<bool>();
-  S0_pwr_profile = doc["S0_pwr_profile"].as<int>();
+  S0 = doc["S0"].as<bool>();
 
   saveS0Vars();
   server.send(200, "text/plain", "OK");
@@ -576,8 +569,7 @@ void saveS0Vars(){
   JsonDocument doc;
 
   doc["S0_gameID"] = S0_gameID;
-  doc["S0_pwr"] = S0_pwr;
-  doc["S0_pwr_profile"] = S0_pwr_profile;
+  doc["S0"] = S0;
 
   File f = LittleFS.open("/s0vars.json", FILE_WRITE);
 
@@ -593,16 +585,14 @@ void loadS0Vars(){
   f.close();
 
   S0_gameID = doc["S0_gameID"].as<bool>();
-  S0_pwr = doc["S0_pwr"].as<bool>();
-  S0_pwr_profile = doc["S0_pwr_profile"].as<int>();
+  S0 = doc["S0"].as<bool>();
 } // end of loadS0Vars()
 
 void handleGetS0Vars(){
   JsonDocument doc;
 
   doc["S0_gameID"] = S0_gameID;
-  doc["S0_pwr"] = S0_pwr;
-  doc["S0_pwr_profile"] = S0_pwr_profile;
+  doc["S0"] = S0;
 
   String out;
   serializeJson(doc, out);
@@ -726,10 +716,21 @@ void handleRoot() {
 
       .controls { text-align: center; }
       .arrow { font-size: 0.8em; margin-left: 4px; color: #555; }
-      .s0-row { background-color: #eee; font-weight: bold; }
-      .s0-row td:nth-last-child(-n+3) {
+      .s0-row td {
         background-color: white;
-        border: none;
+        border: 1px solid #999;
+      }
+      .s0-row td:first-child {
+        background-color: #eee;
+        font-weight: bold;
+      }
+      .s0-cell {
+        background-color: #eee;
+        border: 1px solid #999;
+        font-weight: normal;
+        text-align: center;
+        vertical-align: middle;
+        padding: 6px;
       }
 
       .topbar {
@@ -886,6 +887,60 @@ void handleRoot() {
         position: relative;
       }
 
+      .consoles-header {
+        position: relative;
+        width: 80%;
+        margin: 20px auto 0 auto;
+        text-align: center;
+      }
+
+      .consoles-header h2 {
+        margin: 0;
+      }
+
+      .add-console-wrapper {
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      .add-console-btn {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        border: none;
+        background-color: #4CAF50;
+        color: white;
+        font-size: 20px;
+        font-weight: bold;
+        cursor: pointer;
+        padding: 0;
+        line-height: 32px;
+      }
+
+      .add-console-btn:hover {
+        background-color: #43a047;
+      }
+
+      .gamedb-header {
+        position: relative;
+        width: 80%;
+        margin: 20px auto 0 auto;
+        text-align: center;
+      }
+
+      .gamedb-header h2 {
+        margin: 0;
+      }
+
+      .add-profile-wrapper {
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
     </style>
   </head>
   <body>
@@ -904,18 +959,17 @@ void handleRoot() {
 
   <center><h1>Donut Shop</h1></center>
   <div class="controls">
-    <button onclick="addConsole()">Add Console</button>
-    <span class="tooltip">
-      <button onclick="addProfile()">
-        Add Profile
-      </button>
-      <span class="tooltip-bubble">
-      Will populate with last gameID found.
-      </span>
+  </div>
+
+    <div class="consoles-header">
+      <h2>Consoles</h2>
+
+      <span class="tooltip add-console-wrapper">
+        <button class="add-console-btn" onclick="addConsole()">+</button>
+        <span class="tooltip-bubble">Add Console</span>
     </span>
   </div>
 
-  <h2>Consoles</h2>
   <table id="consoleTable">
     <thead>
       <tr>
@@ -964,7 +1018,15 @@ void handleRoot() {
     <tbody></tbody>
   </table>
 
-  <h2>gameDB</h2>
+  <div class="gamedb-header">
+    <h2>gameDB</h2>
+    <span class="tooltip add-profile-wrapper">
+      <button class="add-console-btn" onclick="addProfile()">+</button>
+      <span class="tooltip-bubble">
+        Add Profile - Will populate with last gameID found.
+      </span>
+    </span>
+  </div>
   <table id="profileTable">
     <thead>
       <tr>
@@ -1115,15 +1177,26 @@ void handleRoot() {
 
     // --- Enabled switch column ---
     const tdEnableS0 = document.createElement('td');
+    tdEnableS0.classList.add('s0-cell');
+
+    // Add the power emoji text
+    const powerIcon = document.createElement('span');
+    powerIcon.textContent = "⏻";
+    powerIcon.style.marginRight = "6px";
+    tdEnableS0.appendChild(powerIcon);
+
+    // Tooltip wrapper for switch
+    const tooltip = document.createElement('span');
+    tooltip.className = 'tooltip';
+
     const label = document.createElement('label');
     label.className = 'switch';
 
     const s0cb = document.createElement('input'); 
-    s0cb.type='checkbox';
-    s0cb.checked = !!S0Vars['S0_pwr'];
+    s0cb.type = 'checkbox';
+    s0cb.checked = !!S0Vars['S0'];
     s0cb.onchange = async () => { 
-      S0Vars['S0_pwr'] = s0cb.checked; 
-      s0profile.disabled = !s0cb.checked; 
+      S0Vars['S0'] = s0cb.checked; 
       saveS0Vars(); 
     };
 
@@ -1132,49 +1205,20 @@ void handleRoot() {
 
     label.appendChild(s0cb);
     label.appendChild(slider);
-    tdEnableS0.appendChild(label);
-    trS0.appendChild(tdEnableS0);
 
-    // --- Description + number input column ---
-    const tdDescS0 = document.createElement('td');
-    tdDescS0.style.display = 'flex';
-    tdDescS0.style.alignItems = 'center';
-    tdDescS0.style.gap = '8px';
-    tdDescS0.style.whiteSpace = 'nowrap';
-
-    // label with tooltip
-    const labelSpan = document.createElement('span');
-    labelSpan.textContent = "All Powered Off Profile: ";
-    labelSpan.classList.add('tooltip');
-
+    // Tooltip bubble
     const bubble = document.createElement('span');
     bubble.className = 'tooltip-bubble';
-    bubble.textContent = "Must have at least 1 Enabled and unreachable. Disabled do not count.";
-    labelSpan.appendChild(bubble);
-    tdDescS0.appendChild(labelSpan);
+    bubble.textContent = "Load S0 profile when ALL Consoles are powered OFF";
 
-    // number input fills remaining space
-    const s0profile = document.createElement('input'); 
-    s0profile.type = 'number'; 
-    s0profile.id = 'S0_pwr_profile';
-    s0profile.value = S0Vars['S0_pwr_profile'] || 0;
-    s0profile.disabled = !s0cb.checked;
-    s0profile.style.width = '40px';
-    s0profile.onchange = async () => { 
-      S0Vars['S0_pwr_profile'] = parseInt(s0profile.value) || 0; 
-      saveS0Vars(); 
-    };
-    tdDescS0.appendChild(s0profile);
+    tooltip.appendChild(label);
+    tooltip.appendChild(bubble);
 
-    trS0.appendChild(tdDescS0);
+    // Add the switch (with tooltip) to the cell
+    tdEnableS0.appendChild(tooltip);
 
-    // --- fill remaining columns ---
-    ['', '', ''].forEach(() => {
-      const td = document.createElement('td');
-      td.style.backgroundColor = 'white';
-      td.style.border = 'none';
-      trS0.appendChild(td);
-    });
+    trS0.appendChild(tdEnableS0);
+
 
     tbody.appendChild(trS0);
   }
