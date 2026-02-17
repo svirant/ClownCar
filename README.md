@@ -110,7 +110,6 @@ There are a multiple moving parts with this setup, and if you have issues, pleas
 
 The new Web UI allows you to live update the Consoles and gameID table. You no longer have to reflash for changes. You can also now import and export your config if anything were to happen and you need to rebuild.
 
-The "S0" options are now configurable in the Web UI.
 
 ```
 /*
@@ -121,14 +120,7 @@ The "S0" options are now configurable in the Web UI.
 
 bool const VGASerial = false;    // Use onboard TX1 pin to send Serial Commands to RT4K.
 
-bool S0_pwr = false;        // Load "S0_pwr_profile" when all consoles defined below are off. Defined below.
-
-int S0_pwr_profile = -12;    // When all consoles definied below are off, load this profile. set to 0 means that S0_<whatever>.rt4 profile will load.
-                                 // "S0_pwr" must be set true
-                                 //
-                                 // If using a "remote button profile" which are valued 1 - 12, place a "-" before the profile number. 
-                                 // Example: -1 means "remote button profile 1"
-                                 //          -12 means "remote button profile 12"
+bool S0 = true;            // Load "S0_whatever.rt4" when all consoles defined below are off.
 
 bool S0_gameID = true;     // When a gameID match is not found for a powered on console, DefaultProf for that console will load
 ```
