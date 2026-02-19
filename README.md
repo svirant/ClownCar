@@ -9,6 +9,9 @@ is an Arduino Nano ESP32 + OTG adapter that changes profiles for the RT4K based 
 See it in action: https://youtu.be/ldbfFbKzjh8
 <br /><br />
 ## Updates
+  - ALL settings are now configured in the Web UI, including Wifi.
+  - New Captive Portal for joining to your home network. Initial setup requires connecting to "DonutShop_Setup" Wifi.
+  - New Settings page allows you to Update Firmware and Load S0 profile if all Consoles are off. 
   - OTA updates now available. "donutshop" shows up as a Network port in Arduino IDE 2.x
   - New Web UI!
     - [Follow steps below to setup.](https://github.com/svirant/DonutShop/#additional-steps-for-latest-version-of-donutshopino)
@@ -51,7 +54,7 @@ You can disable the <code style="color : blue">BLUE</code> / <code style="color 
 ## Programming the Arduino Nano ESP32
 I recommend the [Official Arduino IDE and guide](https://www.arduino.cc/en/Guide) if you're unfamiliar with Arduinos. All .ino files used for programming are listed above. The following Libraries will also need to be added in order to Compile successfully.<br />
 - **Libraries:**
-  - If a Library is missing, it's usually available through the built-in Library Manager under "Tools" -> "Manage Libraries..."
+  - If a Library is missing, it should be available through the built-in Library Manager under "Tools" -> "Manage Libraries..."
   - <EspUsbHostSerial_FTDI.h>  Follow these steps to add EspUsbHostSerial_FTDI.h
     - Goto https://github.com/wakwak-koba/EspUsbHost
     - Click the <code style="color : green">GREEN</code> "<> Code" box and "Download ZIP"
@@ -85,14 +88,10 @@ Requires you to short the B1 and Gnd pins during one of the steps. This method i
 9. Return to the Arduino IDE and select "Sketch", "Upload Using Programmer". Make sure to use THIS option and NOT the normal "Upload" option.
 10. If successful, the sketch will compile and upload leaving you with a message "Hard resetting via RTS pin..."
 11. Disconnect the usb cable and remove the short on B1 and Gnd.
-12. Upon reconnecting the usb cable your board should **Successfully boot DonutShop**. You should see the blue led return indicating it's connected to WiFi and looking for addresses to connect to. If the blue led does not return, press the RST button and/or make sure you have your WiFi settings correctly entered. Remember, only 2.4GHz wifi is supported.
-13. For all future changes/uploads you can return to using the normal "Sketch" -> "Upload" option. Choose between these two methods:
-
-Wifi OTA:
-- You can use select "donutshop" as a Network port in Arduino IDE 2.x<br />
-
-USB:
-- The board will always need to be in "bootloader" mode by "double clicking" the RST button right after connecting the usb cable. 
+12. Upon reconnecting the usb cable your board should **Successfully boot DonutShop** and leave you with an orange LED.
+13. With your computer or smartphone, join the broadcasted "DonutShop_Setup" Wifi to join it to your home network.
+14. Follow the instructions listed and once complete, you should see a blue led indicating it's connected to WiFi and looking for addresses to connect to. If the blue led does not show, press the RST button one time.
+15. For all future changes/uploads you can use the "Firmware Update" section in Settings to apply the latest listed .bin file.
 
 ## General Setup
 
@@ -110,22 +109,8 @@ There are a multiple moving parts with this setup, and if you have issues, pleas
 
 The new Web UI allows you to live update the Consoles and gameID table. You no longer have to reflash for changes. You can also now import and export your config if anything were to happen and you need to rebuild.
 
-
-```
-/*
-////////////////////
-//    OPTIONS    //
-//////////////////
-*/
-
-bool const VGASerial = false;    // Use onboard TX1 pin to send Serial Commands to RT4K.
-
-bool S0 = true;            // Load "S0_whatever.rt4" when all consoles defined below are off.
-
-bool S0_gameID = true;     // When a gameID match is not found for a powered on console, DefaultProf for that console will load
-```
 ## WiFi setup
-**ONLY** compatible with **2.4GHz** WiFi APs. Configure the options at the beginning of the .ino file.
+**ONLY** compatible with **2.4GHz** WiFi APs. Configured during initial setup process. If you need to change SSID or password, the "DonutShop_Setup" AP will reappear after 2 minutes of not being able to connect.
 
 <br />
 

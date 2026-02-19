@@ -1,5 +1,5 @@
 /*
-* RT4K DonutShop v0.4n
+* DonutShop (Arduino Nano ESP32 only)
 * Copyright(C) 2026 @Donutswdad
 *
 * This program is free software: you can redistribute it and/or modify
@@ -16,6 +16,18 @@
 * along with this program.  If not,see <http://www.gnu.org/licenses/>.
 */
 
+#define FIRMWARE_VERSION "0.5d"
+#define FW_TYPE "C"
+#define SEND_LEDC_CHANNEL 0
+#define IR_SEND_PIN 11    // Optional IR LED Emitter for RT5X compatibility. Sends IR data out Arduino pin D11
+#define IR_RECEIVE_PIN 2  // Optional IR Receiver on pin D2
+#define extronSerial Serial1
+#define extronSerial2 Serial2
+#define Serial Serial0 // ** COMMENT OUT THIS LINE ** to see output in Serial Monitor. Disables Serial output to RT4K. usbMode must also be set to "false"
+
+
+#include <TinyIRReceiver.hpp> // all can be found in the built-in Library Manager
+#include <IRremote.hpp>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
@@ -23,17 +35,23 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
-#include <EspUsbHostSerial_FTDI.h> // https://github.com/wakwak-koba/EspUsbHost in order to have FTDI support for the RT4K usb serial port, this is the easist method.
+#include <WiFiManager.h>
+#include <Update.h>
+// <EspUsbHostSerial_FTDI.h> is listed further down with instructions on how to install
+
+uint8_t const debugE1CAP = 0; // line ~780
+uint8_t const debugE2CAP = 0; // line ~1044
+uint8_t const debugState = 0; // line ~590
+
+////////////////////////////////////////////////////////////////////////////////////
+
+const char* donuthostname = "donutshop";      // hostname, by default: http://donutshop.local include quotes ""
+
+#define usbMode true              // USB Serial Command mode. set true to enable. requires OTG adapter. normal Serial mode will be active regardless of setting.
+                                   // https://github.com/wakwak-koba/EspUsbHost will also need to be installed in order to have FTDI support for the RT4K usb serial port.
+                                   // This is the easiest method...
                                    // Step 1 - Goto the github link above. Click the GREEN "<> Code" box and "Download ZIP"
                                    // Step 2 - In Arudino IDE; goto "Sketch" -> "Include Library" -> "Add .ZIP Library"
-
-/////////////////////////////////////////////////// WIFI // WIFI // WIFI // WIFI /////////////////////////////////////////////////////////
-
-/**--- WIFI / setup ---**/
-const char* donuthostname = "donutshop";      // http://donutshop.local
-const char* ssid = "SSID";                    // Wifi Network goes here in quotes ""  Note: MUST be a 2.4GHz WiFi AP. 5GHz is NOT supported by the Nano ESP32.
-const char* password = "password";            // Wifi Credentials go here in quotes ""
-const char* updatepassword = "update123";     // password for updating firmware over Wifi via Arduino IDE 2.x`                                  
 
 /*
 ////////////////////
@@ -41,14 +59,227 @@ const char* updatepassword = "update123";     // password for updating firmware 
 //////////////////
 */
 
-bool const VGASerial = false;    // Use onboard TX1 pin to send Serial Commands to RT4K.
 
-bool S0 = true;            // Load "S0_whatever.rt4" when all consoles defined below are off.
+uint16_t offset = 0; // Only needed for multiple Donut Dongles (DD). Set offset so 2nd,3rd,etc boards don't overlap SVS profiles. (e.g. offset = 300;) 
+                      // MUST use SRS=1 on additional DDs. If using the IR receiver, recommended to have it only connected to the DD with lowest offset.
 
-bool S0_gameID = true;     // When a gameID match is not found for a powered on console, DefaultProf for that console will load
 
+uint8_t SRS = 1;  // Switch Rule Set  
+                      //     "Remote" profiles are profiles that are assigned to buttons 1-12 on the RT4K remote. "SVS" profiles reside under the "/profile/SVS/" directory 
+                      //     on the SD card.  This option allows you to choose which ones to call when a console is powered on.  Remote profiles allow you to easily change 
+                      //     the profile being used for a console's switch input if your setup is in flux. SVS require you to rename the file itself on the SD card which is 
+                      //     a little more work.  Regardless, SVS profiles will need to be used for console switch inputs over 12.
+                      //
+                      // **** Make sure "Auto Load SVS" is "On" under the RT4K Profiles menu. A requirement for most options ****
+                      //
+                      // 0 - use "Remote" profiles 1-12 for up to 12 inputs on 1st Extron Switch and SVS 13 - 99 for everything over 12. Only SVS profiles are used on 2nd Extron Switch if connected.
+                      //
+                      //     - remote profiles 1-12 for 1st Extron or TESmart Switch (If S0 below is set to true - remote profile 12 is used when all ports are in-active)
+                      //     - SVS  12 - 99  for 1st Extron or TESmart (S0 is true)
+                      //     - SVS  13 - 99  for 1st Extron or TESmart (S0 is false)
+                      //     - SVS 101 - 199 for 2nd Extron or TESmart
+                      //
+                      // 1 - use only "SVS" profiles.
+                      //     Make sure "Auto Load SVS" is "On" under the RT4K Profiles menu
+                      //     RT4K checks the /profile/SVS subfolder for profiles and need to be named: "S<input number>_<user defined>.rt4"
+                      //     For example, SVS input 2 would look for a profile that is named S2_SNES.rt4
+                      //     If there’s more than one profile that fits the pattern, the first match is used
+                      //
+                      //     - SVS   1 -  99 for 1st Extron or TESmart
+                      //     - SVS 101 - 199 for 2nd Extron or TESmart
+                      //     - SVS   0       for S0 option mentioned below
+                      //
+                      //  ** If S0 below is set to true, create "/profile/SVS/S0_<user defined>.rt4" for when all ports are in-active. Ex: S0_HDMI.rt4
+                      //
+
+bool S0 = false;  // (Profile 0) default is false 
+                         //
+                         //  ** Recommended to remove any /profile/SVS/S0_<user defined>.rt4 profiles and leave this option "false" if using in tandem with the Scalable Video Switch. **
+                         //  ** Does not work with TESmart HDMI switches **
+                         //
+                         // set "true" to load "Remote Profile 12" instead of "S0_<user definted>.rt4" (if SRS=0) when all ports are in-active on 1st Extron switch (and 2nd if connected). 
+                         // You can assign it to a generic HDMI profile for example.
+                         // If your device has a 12th input, SVS will be used instead. "If" you also have an active 2nd Extron Switch, Remote Profile 12
+                         // will only load if "BOTH" switches have all in-active ports.
+                         // 
+                         // 
+                         // If SRS=1, /profile/SVS/ "S0_<user defined>.rt4" will be used instead of Remote Profile 12
+                         //
+
+////////////////////////// 
+                        // Choosing the above two options can get quite confusing (even for myself) so maybe this will help a little more:
+                        //
+                        // when S0=0 and SRS=0, button profiles 1 - 12 are used for EXTRON sw1, and SVS for EVERYTHING else
+                        // when S0=0 and SRS=1, SVS profiles are used for everything
+                        // when S0=1 and SRS=0, button profiles 1 - 11 are used for EXTRON sw1 and Remote Profile 12 as "Profile S0", and SVS for everything else 
+                        // when S0=1 and SRS=1, SVS profiles for everything, and uses S0_<user defined>.rt4 as "Profile 0" 
+                        //
+//////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////////////
+// EXTRON MATRIX
+
+uint8_t ExtronVideoOutputPortSW1 = 1; // For certain Extron Matrix models, must specify the video output port that connects to RT4K
+uint8_t ExtronVideoOutputPortSW2 = 1; // can also be used for auto matrix mode as shown in next option
+
+
+// For Extron Matrix switches that support DSVP. RGBS and HDMI/DVI video types.
+bool automatrixSW1 = false; // set true for auto matrix switching on "SW1" port
+bool automatrixSW2 = false; // set true for auto matrix switching on "SW2" port
+
+
+uint8_t vinMatrix[65] = {0,  // MATRIX switchers  // When auto matrix mode is enabled: (automatrixSW1 / automatrixSW2 defined above)
+                                                        // set to 0 for the auto switched input to tie to all outputs
+                                                        // set to 1 for the auto switched input to trigger a Preset
+                                                        // set to 2 for the auto switched input to tie to "ExtronVideoOutputPortSW1" / "ExtronVideoOutputPortSW2"
+                                                        //
+                                                        // For option 1, set the following inputs to the desired Preset #
+                                                        // (by default each input # is set to the same corresponding Preset #)
+                           1,  // input 1 SW1
+                           2,  // input 2
+                           3,  // input 3
+                           4,  // input 4
+                           5,  // input 5
+                           6,  // input 6
+                           7,  // input 7
+                           8,  // input 8
+                           9,  // input 9
+                           10,  // input 10
+                           11,  // input 11
+                           12,  // input 12
+                           13,  // input 13
+                           14,  // input 14
+                           15,  // input 15
+                           16,  // input 16
+                           17,  // input 17
+                           18,  // input 18
+                           19,  // input 19
+                           20,  // input 20
+                           21,  // input 21
+                           22,  // input 22
+                           23,  // input 23
+                           24,  // input 24
+                           25,  // input 25
+                           26,  // input 26
+                           27,  // input 27
+                           28,  // input 28
+                           29,  // input 29
+                           30,  // input 30
+                           30,  // input 31
+                           30,  // input 32
+                               //
+                               // ONLY USE FOR 2ND MATRIX SWITCH on SW2
+                           1,  // 2ND MATRIX SWITCH input 1 SW2
+                           2,  // 2ND MATRIX SWITCH input 2
+                           3,  // 2ND MATRIX SWITCH input 3
+                           4,  // 2ND MATRIX SWITCH input 4
+                           5,  // 2ND MATRIX SWITCH input 5
+                           6,  // 2ND MATRIX SWITCH input 6
+                           7,  // 2ND MATRIX SWITCH input 7
+                           8,  // 2ND MATRIX SWITCH input 8
+                           9,  // 2ND MATRIX SWITCH input 9
+                           10,  // 2ND MATRIX SWITCH input 10
+                           11,  // 2ND MATRIX SWITCH input 11
+                           12,  // 2ND MATRIX SWITCH input 12
+                           13,  // 2ND MATRIX SWITCH input 13
+                           14,  // 2ND MATRIX SWITCH input 14
+                           15,  // 2ND MATRIX SWITCH input 15
+                           16,  // 2ND MATRIX SWITCH input 16
+                           17,  // 2ND MATRIX SWITCH input 17
+                           18,  // 2ND MATRIX SWITCH input 18
+                           19,  // 2ND MATRIX SWITCH input 19
+                           20,  // 2ND MATRIX SWITCH input 20
+                           21,  // 2ND MATRIX SWITCH input 21
+                           22,  // 2ND MATRIX SWITCH input 22
+                           23,  // 2ND MATRIX SWITCH input 23
+                           24,  // 2ND MATRIX SWITCH input 24
+                           25,  // 2ND MATRIX SWITCH input 25
+                           26,  // 2ND MATRIX SWITCH input 26
+                           27,  // 2ND MATRIX SWITCH input 27
+                           28,  // 2ND MATRIX SWITCH input 28
+                           29,  // 2ND MATRIX SWITCH input 29
+                           30,  // 2ND MATRIX SWITCH input 30
+                           30,  // 2ND MATRIX SWITCH input 31
+                           30,  // 2ND MATRIX SWITCH input 32
+                           };
+
+// RT4K IR remote options ////////////////////////////////////////////////////////////////////////
+
+                           // ** Must be on firmware version 3.7 or higher **
+uint8_t RT5Xir = 0;     // 0 = disables IR Emitter for RetroTink 5x
+                              // 1 = enabled for Extron sw1 / alt sw1, TESmart HDMI, MT-ViKi, or Otaku Games Scart Switch if connected
+                              //     sends Profile 1 - 10 commands to RetroTink 5x. Must have IR LED emitter connected.
+                              //
+                              // 2 = enabled for gscart switch only (remote profiles 1-8 for first gscart, 9-10 for first 2 inputs on second gscart)
+                              //
+                              // 3 = enabled for Extron sw2 / alt sw2, TESmart HDMI, MT-ViKi, or Otaku Games Scart Switch if connected 
+                              //     sends Profile 1 - 10 commands to RetroTink 5x. Must have IR LED emitter connected.
+                              //
+                              // 4 = enabled for Otaku Games Scart Switch that is connected to Extron sw1 / alt sw1 with another Otaku via headphone splitter.
+                              //      this 2nd Otaku has been flashed to repsond with "remote prof13" - "remote prof22", and "remote prof24" when all ports are off.
+
+uint8_t OSSCir = 0;     // 0 = disables IR Emitter for OSSC
+                              // 1 = enabled for Extron sw1 switch, TESmart HDMI, or Otaku Games Scart Switch if connected
+                              //     sends Profile 1 - 14 commands to OSSC. Must have IR LED emitter connected.
+                              //     
+                              // 2 = enabled for gscart switch only (remote profiles 1-8 for first gscart, 9-14 for first 6 inputs on second gscart)
+
+uint8_t MTVir = 0;   // Must have IR "Receiver" connected to the Donut Dongle for option 1 & 2.
+                              // 0 = disables IR Receiver -> Serial Control for MT-VIKI 8 Port HDMI switch
+                              //
+                              // 1 = MT-VIKI 8 Port HDMI switch connected to "Extron sw1"
+                              //     Using the RT4K Remote w/ the IR Receiver, AUX8 + profile button changes the MT-VIKI Input over Serial.
+                              //     Sends auxprof SVS profiles listed below.
+                              //
+                              // 2 = MT-VIKI 8 Port HDMI switch connected to "Extron sw2"
+                              //     Using the RT4K Remote w/ the IR Receiver, AUX8 + profile button changes the MT-VIKI Input over Serial.
+                              //     Sends auxprof SVS profiles listed below. You can change them below to 101 - 108 to prevent SVS profile conflicts if needed.
+
+uint8_t TESmartir = 0;  // Must have IR "Receiver" connected to the Donut Dongle for option 1 and above.
+                              // 0 = disables IR Receiver -> Serial Control for TESmart 16x1 Port HDMI switch
+                              //
+                              // 1 = TESmart 16x1 HDMI switch connected to "alt sw1"
+                              //     Using the RT4K Remote w/ the IR Receiver, AUX7 + profile button changes the Input over Serial. AUX7 + AUX1 - AUX4 for Input 13 - 16.
+                              //     Sends SVS profile 1 - 16 as well.
+                              //
+                              // 2 = TESmart 16x1 HDMI switch connected to "alt sw2"
+                              //     Using the RT4K Remote w/ the IR Receiver, AUX8 + profile button changes the Input over Serial. AUX8 + AUX1 - AUX4 for Input 13 - 16.
+                              //     Sends SVS profile 101 - 116 as well.
+                              //  ** this option overrides auxprof shown below  **
+                              //
+                              // 3 = TESmart 16x1 HDMI switch connected to BOTH "alt sw1" and "alt sw2"
+                              //     Use AUX7 and AUX8 buttons as described above.
+                              //  ** this option overrides auxprof shown below  **
+
+uint8_t auxprof[12] =   // Assign SVS profiles to IR remote profile buttons. 
+                              // Replace 1, 2, 3, etc below with "ANY" SVS profile number.
+                              // Press AUX8 then profile button to load. Must have IR Receiver connected and Serial connection to RT4K.
+                              //
+                              // ** Will not work if TESmartir above is set to 2 or 3 **
+                              // 
+                              {1,  // AUX8 + profile 1 button
+                                2,  // AUX8 + profile 2 button
+                                3,  // AUX8 + profile 3 button
+                                4,  // AUX8 + profile 4 button
+                                5,  // AUX8 + profile 5 button
+                                6,  // AUX8 + profile 6 button
+                                7,  // AUX8 + profile 7 button
+                                8,  // AUX8 + profile 8 button
+                                9,  // AUX8 + profile 9 button
+                                10, // AUX8 + profile 10 button
+                                11, // AUX8 + profile 11 button
+                                12, // AUX8 + profile 12 button
+                                };
+
+
+String const auxpower = "LG"; // AUX8 + Power button sends power off/on via IR Emitter. "LG" OLEX CX is the only one implemented atm.
+
+#define GAMEID1 0
+#define EXTRON1 1
+#define EXTRON2 2
 #define MAX_CONSOLES 10
 #define MAX_GAMEDB 1000
+
 
 /*
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -66,7 +297,17 @@ struct Console {
   bool Enabled;
 };
 
-                   // format as so: {console address, Default Profile for console, current profile state (leave 0), power state (leave 0), active state (leave 0)}
+struct profileorder {
+  int Prof;
+  uint8_t On;
+  uint8_t King;
+  uint8_t Order;
+};
+
+profileorder mswitch[3] = {{0,0,0,0},{0,0,0,1},{0,0,0,2}};
+uint8_t mswitchSize = 3;
+
+                   // format as so: {Description, console address, Default Profile for console, current profile state (leave 0), power state (leave 0), active state (leave 0), Enabled}
                    //
                    // If using a "remote button profile" for the "Default Profile" which are valued 1 - 12, place a "-" before the profile number. 
                    // Example: -1 means "remote button profile 1"
@@ -75,12 +316,13 @@ struct Console {
                    //            1 means SVS profile 1
                    //           12 means SVS profile 12
                    //           etc...
-Console consoles[MAX_CONSOLES] = {{"PS1","http://ps1digital.local/gameid",-9,0,0,0,1}, // you can add more, but stay in this format
-                      {"MemCardPro","http://10.0.1.52/api/currentState",-5,0,0,0,1},
-                      {"N64","http://n64digital.local/gameid",-7,0,0,0,1} // the last one in the list has no "," at the end
+Console consoles[MAX_CONSOLES] = {{"PS1 Digital","http://ps1digital.local/gameid",-9,0,0,0,1}, // you can add more, but stay in this format
+                      {"MemCardPro","https://10.0.1.52/api/currentState",-5,0,0,0,1},
+                      {"N64 Digital","http://n64digital.local/gameid",-7,0,0,0,1} // the last one in the list has no "," at the end
                       };
 
-int consolesSize = 3; // Struct can hold 10 entries, but only set to current size so the UI doesnt show 7 blank entries :)
+int consolesSize = 3; // Can hold MAX_CONSOLES entries, but only set for 3 so the UI doesnt show 7 blank entries :)
+
 
                    // If using a "remote button profile" for the "PROFILE" which are valued 1 - 12, place a "-" before the profile number. 
                    // Example: -1 means "remote button profile 1"
@@ -100,70 +342,205 @@ String gameDB[MAX_GAMEDB][3] = {{"N64 EverDrive","00000000-00000000---00","7"}, 
                       {"N64 Wave Race 64","492F4B61-04E5146A-N-45","504"},
                       {"PS1 Ridge Racer Revolution","SLUS-00214","10"},
                       {"PS1 Ridge Racer","SCUS-94300","9"},
-                      {"MegaDrive","MegaDrive","506"},                                                                                                                                  
+                      {"MegaDrive","MegaDrive","506"},
                       {"SoR2","Streets of Rage 2 (USA)","507"}};
 
-uint16_t gameDBSize = 11; // array can hold 1000 entries, but only set to current size so the UI doesnt show 989 blank entries :)
+uint16_t gameDBSize = 11; // array can hold MAX_GAMEDB entries, but only set to current size so the UI doesnt show 989 blank entries :)
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-int currentProf = 32222;  // current SVS profile number, set high initially
+// automatrix variables
+uint8_t AMstate[32];
+uint32_t prevAMstate = 0;
+int  AMstateTop = -1;
+uint8_t amSizeSW1 = 8; // 8 by default, but updates if a different size is discovered
+uint8_t amSizeSW2 = 8; // ...
+
+// GAMEID variables
+bool S0_gameID = true;    // When a gameID match is not found for a powered on console, DefaultProf for that console will load
+String payload = ""; 
 unsigned long currentGameTime = 0;
 unsigned long prevGameTime = 0;
-String payload = ""; 
+
+// Extron Global variables
+uint8_t eoutput[2]; // used to store Extron output
+int currentInputSW1 = -1;
+int currentInputSW2 = -1;
+String ecap = "00000000000000000000000000000000000000000000"; // used to store Extron status messages for Extron in String format
+String einput = "000000000000000000000000000000000000"; // used to store Extron input
+byte ecapbytes[44] = {0}; // used to store first 44 bytes / messages for Extron capture
+
+// Serial commands
+byte viki[4] = {0xA5,0x5A,0x00,0xCC};
+byte tesmart[6] = {0xAA,0xBB,0x03,0x01,0x01,0xEE};
+byte const VERB[5] = {0x57,0x33,0x43,0x56,0x7C}; // sets matrix switch to verbose level 3
+
+// LS timer variables
+unsigned long LScurrentTime = 0; 
+unsigned long LScurrentTime2 = 0;
+unsigned long LSprevTime = 0;
+unsigned long LSprevTime2 = 0;
+
+// Delay Send variables
+unsigned long DScurrentTime = 0; 
+unsigned long DScurrentTime2 = 0;
+unsigned long DSprevTime = 0;
+unsigned long DSprevTime2 = 0;
+bool delaySend = false;
+int delayProf = 33333;
+
+// IR Global variables
+uint8_t repeatcount = 0; // used to help emulate the repeat nature of directional button presses
+String svsbutton; // used to store 3 digit SVS profile when AUX8 is double pressed
+uint8_t nument = 0; // used to keep track of how many digits have been entered for 3 digit SVS profile
+
+// sendRTwake global variables
+int currentProf = 0; // negative numbers for Remote Button profiles, positive for SVS profiles
+bool RTwake = false;
+unsigned long currentTime = 0;
+unsigned long prevTime = 0;
+unsigned long prevBlinkTime = 0;
+bool wakesleepcmd = false; // specifically for USB mode, needed for the "pwr on" / "remote pwr" command combo so a single button can sleep/wake
+
+// TESmart remote control
+uint8_t aux7button = 0; // Used to keep track if AUX7 was pressed to change inputs on TESmart 16x1 HDMI switch via RT4K remote.
+uint8_t aux8button = 0;  // Used to keep track of AUX8 button presses for addtional remote commands
+
+// MT-VIKI Time variables
+unsigned long MTVcurrentTime = 0; 
+unsigned long MTVprevTime = 0;
+unsigned long sendtimer = 0;
+unsigned long ITEtimer = 0;
+
+// MT-VIKI Time variables
+unsigned long MTVcurrentTime2 = 0;
+unsigned long MTVprevTime2 = 0;
+unsigned long sendtimer2 = 0;
+unsigned long ITEtimer2 = 0;
+
+// MT-VIKI Manual Switch variables
+uint8_t ITEstatus[] = {3,0,0};
+uint8_t ITEstatus2[] = {3,0,0};
+bool ITErecv[2] = {0,0};
+bool listenITE[2] = {1,1};
+uint8_t ITEinputnum[2] = {0,0};
+uint8_t currentMTVinput[2] = {0,0};
+bool MTVdiscon[2] = {false,false};
+bool MTVddSW1 = false;
+bool MTVddSW2 = false;
+
+WebServer server(80);
+
+void DDloop(void *pvParameters);
+void GIDloop(void *pvParameters);
+uint16_t gTime = 2000;
+uint8_t RMTuse = 0;
+
+#if usbMode
+#include <EspUsbHostSerial_FTDI.h> // https://github.com/wakwak-koba/EspUsbHost in order to have FTDI support for the RT4K usb serial port, this is the easiest method.
+                                   // Step 1 - Goto the github link above. Click the GREEN "<> Code" box and "Download ZIP"
+                                   // Step 2 - In Arudino IDE; goto "Sketch" -> "Include Library" -> "Add .ZIP Library"
 
 class SerialFTDI : public EspUsbHostSerial_FTDI {
   public:
   String cprof = "null";
   String tcprof = "null";
+  String tcmd = "null";
+  int tp = 0;
   virtual void task(void) override {
     EspUsbHost::task();
     if(this->isReady()){
       usb_host_transfer_submit(this->usbTransfer_recv);
-      if(cprof != "null" && currentProf != cprof.toInt()){
-        currentProf = cprof.toInt();
+      if(cprof != "null"){
+        tp = cprof.toInt();
+        digitalWrite(LED_BUILTIN,HIGH);
+        analogWrite(LED_RED,255);
+        analogWrite(LED_BLUE,255);
         analogWrite(LED_GREEN,222);
-        if(currentProf >= 0){
+        if(tp >= 0){
+          if(offset > 0) cprof = String(tp + offset);
           tcprof = "\rSVS NEW INPUT=" + cprof + "\r\n";
-          submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length());
+          submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length()); // usb response
           delay(1000);
-          tcprof = "\rSVS CURRENT INPUT=" + cprof + "\r\n";
+          tcprof = "\rSVS CURRENT INPUT=" + cprof + "\r\n"; // serial response     
         }
-        if(currentProf < 0){
-          tcprof = "\rremote prof" + String((-1)*currentProf) + "\r\n";
-          delay(1000); // only added so the green led stays lit for 1 second. not needed for "remote prof" command.
+        if(tp < 0){
+          tcprof = "\rremote prof" + String((-1)*tp) + "\r\n";
         }
-        submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length());
+        submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcprof[0]), tcprof.length()); // usb response
+        if(tp < 0) delay(1000); // only added so the green led stays lit for 1 second for "remote prof" commands
+        digitalWrite(LED_BUILTIN,LOW);
+        analogWrite(LED_RED,255);
+        analogWrite(LED_BLUE,255);
         analogWrite(LED_GREEN,255);
-
+        tcprof = "null";
+        cprof = "null";
+      }
+      else if(tcmd == "wakesleep"){ // this sets up the "pwr on", "remote pwr" command combo so a single button can sleep/wake
+        tcmd = "\rpwr on\r\n";
+        submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcmd[0]), tcmd.length());
+        tcmd = "null";
+        wakesleepcmd = true; // set true so the following will execute next cycle
+      }
+      else if(wakesleepcmd){
+        tcmd = "\rremote pwr\r\n";
+        submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcmd[0]), tcmd.length());
+        tcmd = "null";
+        wakesleepcmd = false;
+      }
+      else if(tcmd != "null"){
+        submit((uint8_t *)reinterpret_cast<const uint8_t*>(&tcmd[0]), tcmd.length());
+        tcmd = "null";
       }
     }
   }
 };
 
 SerialFTDI usbHost;
+#endif
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-WebServer server(80);
-
-uint16_t gTime = 2000;
-void Clientloop(void *pvParameters);
-void GIDloop(void *pvParameters);
 
 void setup(){
 
-  WiFi.begin(ssid,password); // WiFi info is set at the top on line 34
-  usbHost.begin(115200); // leave at 115200 for RT4K connection
-  if(VGASerial){
-    Serial0.begin(9600);
-    while(!Serial0){;}   // allow connection to establish before continuing
-    Serial0.print(F("\r")); // clear RT4K Serial buffer
-  }
-  pinMode(LED_GREEN, OUTPUT); // GREEN led lights up for 1 second when a SVS profile is sent
-  pinMode(LED_BLUE, OUTPUT); // BLUE led is a WiFi activity. Long periods of blue means one of the gameID servers is not connecting.
+  // Enable LEDs
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_BLUE, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+
+  // Wifi Captive Portal Setup
+  // Turn LED orange when disconnected
+  analogWrite(LED_RED,220);   // Red high
+  analogWrite(LED_GREEN,245);  // Green medium
+  analogWrite(LED_BLUE,255);    // Blue off
+
+  WiFiManager wm;
+  std::vector<const char *> menu = {"wifi"};
+  wm.setMenu(menu);
+  wm.setCustomHeadElement(R"rawliteral(
+    <style>
+    .wrap { text-align: center !important; }
+    button { background-color: #4CAF50 !important; }
+    </style>
+    )rawliteral");
+  WiFi.setHostname(donuthostname);
+  wm.autoConnect("DonutShop_Setup");
+
+  // Turn off orange LED when connected
+  analogWrite(LED_RED,255);
   analogWrite(LED_GREEN,255);
   analogWrite(LED_BLUE,255);
-  MDNS.begin(donuthostname); // hostname configured at the top near line 34
+
+  initPCIInterruptForTinyReceiver(); // for IR Receiver
+  #if usbMode
+  usbHost.begin(115200); // leave at 115200 for RT4K usb connection
+  #endif
+  Serial.begin(9600);                           // set the baud rate for the RT4K VGA serial connection
+  extronSerial.begin(9600,SERIAL_8N1,3,4);   // set the baud rate for the Extron sw1 Connection
+  extronSerial.setTimeout(150);                 // sets the timeout for reading / saving into a string
+  extronSerial2.begin(9600,SERIAL_8N1,8,9);  // set the baud rate for Extron sw2 Connection
+  extronSerial2.setTimeout(150);                // sets the timeout for reading / saving into a string for the Extron sw2 Connection3
+  MDNS.begin(donuthostname); // defined around line 40 at the top
   if(!LittleFS.begin(true)){ // format if mount fails
     Serial.println(F("LittleFS mount failed!"));
     return;
@@ -172,24 +549,26 @@ void setup(){
 
   loadGameDB();
   loadConsoles();
-  loadS0Vars();
+  loadVars();
 
   server.on("/",HTTP_GET,handleRoot);
   server.on("/getConsoles",HTTP_GET,handleGetConsoles);
   server.on("/updateConsoles",HTTP_POST,handleUpdateConsoles);
   server.on("/getGameDB",HTTP_GET,handleGetGameDB);
   server.on("/updateGameDB",HTTP_POST,handleUpdateGameDB);
-  server.on("/getS0Vars", HTTP_GET, handleGetS0Vars);
-  server.on("/updateS0Vars", HTTP_POST, handleUpdateS0Vars);
+  server.on("/getVars", HTTP_GET, handleGetVars);
+  server.on("/updateVars", HTTP_POST, handleUpdateVars);
   server.on("/getPayload", HTTP_GET, handleGetPayload);
   server.on("/exportAll", HTTP_GET, handleExportAll);
   server.on("/importAll", HTTP_POST, handleImportAll);
+  server.on("/update", HTTP_POST, handleUpdate, handleUpdateUpload);
 
 
   server.begin();
 
-  xTaskCreate(Clientloop,"Clientloop",4096,NULL,1,NULL);
+  xTaskCreate(DDloop,"DDloop",4096,NULL,1,NULL);
   xTaskCreate(GIDloop,"GIDloop",4096,NULL,1,NULL);
+  
 }  // end of setup
 
 void loop(){
@@ -198,27 +577,39 @@ void loop(){
    //
 }  // end of loop()
 
+void DDloop(void *pvParameters){
+  (void)pvParameters;
+
+  for(;;){
+    readIR();
+    readExtron1();
+    readExtron2();
+    if(RTwake)sendRTwake(8000); // 8000 is 8 seconds. After waking the RT4K, wait this amount of time before re-sending the latest profile change.
+    if(delaySend)DStime(500);
+    server.handleClient();
+    if(debugState){
+      delay(100);
+      Serial.print(F("GAMEID1 "));Serial.print(F(" On: "));Serial.print(mswitch[GAMEID1].On);Serial.print(F(" King: "));Serial.print(mswitch[GAMEID1].King);Serial.print(F(" Prof: "));Serial.println(mswitch[GAMEID1].Prof);
+      Serial.print(F("EXTRON1 "));Serial.print(F(" On: "));Serial.print(mswitch[EXTRON1].On);Serial.print(F(" King: "));Serial.print(mswitch[EXTRON1].King);Serial.print(F(" Prof: "));Serial.println(mswitch[EXTRON1].Prof);
+      Serial.print(F("EXTRON2 "));Serial.print(F(" On: "));Serial.print(mswitch[EXTRON2].On);Serial.print(F(" King: "));Serial.print(mswitch[EXTRON2].King);Serial.print(F(" Prof: "));Serial.println(mswitch[EXTRON2].Prof);
+    }
+    ArduinoOTA.handle();
+    #if usbMode
+    usbHost.task();  // used for RT4K usb serial communications
+    #endif
+  }
+} // end of DDloop
+
 void GIDloop(void *pvParameters){
   (void)pvParameters;
 
   for(;;){
     readGameID();
-    usbHost.task();  // used for RT4K usb serial communications
   }
-}  // end of GIDloop()
-
-void Clientloop(void *pvParameters){
-  (void)pvParameters;
-
-  for(;;){
-    server.handleClient();
-    ArduinoOTA.handle();
-  }
-} // end of Clientloop()
+} // end of GIDloop
 
 void OTAsetup(){
   ArduinoOTA.setHostname(donuthostname);
-  ArduinoOTA.setPassword(updatepassword);
 
   ArduinoOTA
     .onError([](ota_error_t error) {
@@ -232,37 +623,27 @@ void OTAsetup(){
   ArduinoOTA.begin();
 } // end of OTAsetup()
 
-int fetchGameIDProf(String gameID,int dp){ // looks at gameDB for a gameID -> profile match
-  for(int i = 0; i < gameDBSize; i++){      // returns "DefaultProf" for console if nothing found and S0_gameID = true
-    if(gameDB[i][1] == gameID){            // returns "-1" (meaning dont change anything) if nothing found and S0_gameID = false
-      return gameDB[i][2].toInt();
-      break;
-   }
-  }
-
-  if(S0_gameID) return dp;
-  else return -1;
-}  // end of fetchGameIDProf()
-
 void readGameID(){ // queries addresses in "consoles" array for gameIDs
   currentGameTime = millis();  // Init timer
   if(prevGameTime == 0)       // If previous timer not initialized, do so now.
     prevGameTime = millis();
   if((currentGameTime - prevGameTime) >= gTime){ // make sure at least gTime has passed before continuing
-
     int result = 0;
     for(int i = 0; i < consolesSize; i++){
       if(WiFi.status() == WL_CONNECTED && consoles[i].Enabled){ // wait for WiFi connection
         HTTPClient http;
+        WiFiClientSecure https;
+        https.setInsecure(); // needed for MemCardPro 2.0+ firmware support
         http.setConnectTimeout(2000); // give only 2 seconds per console to check gameID, is only honored for IP-based addresses
-        http.begin(consoles[i].Address);
+        if(consoles[i].Address.substring(0,5) == "https") http.begin(https,consoles[i].Address);
+        else http.begin(consoles[i].Address);
         analogWrite(LED_BLUE,222);
         int httpCode = http.GET();             // start connection and send HTTP header
         if(httpCode > 0 || httpCode == -11){   // httpCode will be negative on error, let the read error slide...
           if(httpCode == HTTP_CODE_OK){        // console is healthy // HTTP header has been sent and Server response header has been handled
             consoles[i].Address = replaceDomainWithIP(consoles[i].Address); // replace Domain with IP in consoles array. this allows setConnectTimeout to be honored
             payload = http.getString();        
-            JsonDocument doc; 
+            JsonDocument doc;
             DeserializationError error = deserializeJson(doc, payload);
             if(!error){ // If the response is JSON, continue
               if(!doc["gameID"].isNull()) {  // If payload contains gameID, 
@@ -278,25 +659,21 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
                 if(i != j && consoles[j].King == 1)
                   consoles[j].King = 0;
               }
-              usbHost.cprof = String((consoles[i].Prof));
-              if(VGASerial)sendProfile(consoles[i].Prof);
+              sendProfile(consoles[i].Prof,GAMEID1,1);
             }
-        } 
+          } 
         } // end of if(httpCode > 0 || httpCode == -11)
         else{ // console is off, set attributes to 0, find a console that is On starting at the top of the gameID list, set as King, send profile
           consoles[i].On = 0;
-          consoles[i].Prof = 33333;
+          consoles[i].Prof = 0;
           if(consoles[i].King == 1){
-            currentProf = 33333;
-            usbHost.cprof = String(33333);
             for(int k=0;k < consolesSize;k++){
               if(i == k){
                 consoles[k].King = 0;
                 for(int l=0;l < consolesSize;l++){ // find next Console that is on
                   if(consoles[l].On == 1){
                     consoles[l].King = 1;
-                    usbHost.cprof = String((consoles[l].Prof));
-                    if(VGASerial)sendProfile(consoles[l].Prof);
+                    sendProfile(consoles[l].Prof,GAMEID1,1);
                     break;
                   }
                 }
@@ -308,28 +685,24 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
           for(int m=0;m < consolesSize;m++){
             if(consoles[m].On == 0) count++;
           }
-          if(count == consolesSize && S0){
-            usbHost.cprof = "0";
-            if(VGASerial)sendProfile(0);
-          }   
+          if(count == consolesSize){
+            sendProfile(0,GAMEID1,1);
+          }
         } // end of else()
       http.end();
       analogWrite(LED_BLUE, 255);
       }  // end of WiFi connection
       else if(!consoles[i].Enabled){ // console is disabled in web ui, set attributes to 0, find a console that is On starting at the top of the gameID list, set as King, send profile
           consoles[i].On = 0;
-          consoles[i].Prof = 33333;
+          consoles[i].Prof = 0;
           if(consoles[i].King == 1){
-            currentProf = 33333;
-            usbHost.cprof = String(33333);
             for(int k=0;k < consolesSize;k++){
               if(i == k){
                 consoles[k].King = 0;
                 for(int l=0;l < consolesSize;l++){ // find next Console that is on
                   if(consoles[l].On == 1){
                     consoles[l].King = 1;
-                    usbHost.cprof = String((consoles[l].Prof));
-                    if(VGASerial)sendProfile(consoles[l].Prof);
+                    sendProfile(consoles[l].Prof,GAMEID1,1);
                     break;
                   }
                 }
@@ -337,20 +710,1232 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
     
             } // end of for()
           } // end of if()
-          // int count = 0; // if all consoles in the list have been Disabled
-          // for(int m=0;m < consolesSize;m++){
-          //   if(consoles[m].Enabled == 0) count++;
-          // }
-          // if(count == consolesSize && S0){
-          //   usbHost.cprof = "0";
-          //   if(VGASerial)sendProfile(0);
-          // }   
-      } // end of if else()      
+      } // end of if else()
     }
     currentGameTime = 0;
     prevGameTime = 0;
   }
 }  // end of readGameID()
+
+uint8_t readAMstate(String& sinput, uint8_t size){
+
+  uint32_t newAMstate = 0;
+  for(uint8_t i=0;i < size;i++){
+    char c = sinput.charAt(i);
+    if(c >= '1' && c <= '9'){
+      newAMstate |= (1UL << (size - 1 - i));
+    }
+  }
+
+  uint32_t changed = newAMstate ^ prevAMstate;
+
+  for(uint8_t bitPos = 0;bitPos < size;bitPos++){
+    uint32_t bit = 1UL << (size - 1 - bitPos);
+    uint8_t input = bitPos + 1;
+    if(changed & bit){
+      if(newAMstate & bit){ // input on
+        bool exists = false;
+        for(int j=0;j <= AMstateTop;j++){
+          if(AMstate[j] == input){
+            exists = true;
+            break;
+          }
+        }
+        if(!exists && AMstateTop < (size - 1)) AMstate[++AMstateTop] = input;
+      } // end of input on
+      else{ // input off
+        for(int j=0;j <= AMstateTop;j++){
+          if(AMstate[j] == input){
+            for(int k = j;k < AMstateTop;k++){
+              AMstate[k] = AMstate[k + 1];
+            }
+            AMstateTop--;
+            break;
+          }
+        }
+      } // end of input off
+    } // end of changed ?
+  } // end of for
+
+  prevAMstate = newAMstate;
+  return AMstate[AMstateTop];
+} // end of readAMstate()
+
+
+void readExtron1(){
+
+
+    if(automatrixSW1){ // if automatrixSW1 is set "true" in options, then "0LS" is sent every 500ms to see if an input has changed
+      LS0time1(500);
+    }
+
+    if(MTVddSW1 && !automatrixSW1){  // if a MT-VIKI switch has been detected on SW1, then the currently active MT-VIKI hdmi port is checked for disconnection
+      MTVtime1(1500);
+    }
+
+    // listens to the Extron sw1 Port for changes
+    // SIS Command Responses reference - Page 77 https://media.extron.com/public/download/files/userman/XP300_Matrix_B.pdf
+    if(extronSerial.available() > 0){ // if there is data available for reading, read
+      extronSerial.readBytes(ecapbytes,44); // read in and store only the first 44 bytes for every status message received from 1st Extron SW port
+      if(debugE1CAP){
+        Serial.print(F("ecap HEX: "));
+        for(uint8_t i=0;i<44;i++){
+          Serial.print(ecapbytes[i],HEX);Serial.print(F(" "));
+        }
+        Serial.println(F("\r"));
+        ecap = String((char *)ecapbytes);
+        Serial.print(F("ecap ASCII: "));Serial.println(ecap);
+      }
+    }
+    if(!debugE1CAP) ecap = String((char *)ecapbytes); // convert bytes to String for Extron switches
+
+
+    if((ecap.substring(0,3) == "Out" || ecap.substring(0,3) == "OUT") && !automatrixSW1){ // store only the input and output states, some Extron devices report output first instead of input
+      if(ecap.substring(4,5) == " "){
+        einput = ecap.substring(5,9);
+        if(ecap.substring(3,4).toInt() == ExtronVideoOutputPortSW1) eoutput[0] = 1;
+        else eoutput[0] = 0;
+      }
+      else{
+        einput = ecap.substring(6,10);
+        if(ecap.substring(3,5).toInt() == ExtronVideoOutputPortSW1) eoutput[0] = 1;
+        else eoutput[0] = 0;
+      }
+    }
+    else if(ecap.substring(0,1) == "F"){ // detect if switch has changed auto/manual states
+      einput = ecap.substring(4,8);
+      eoutput[0] = 1;
+    }
+    else if(ecap.substring(0,3) == "Rpr"){ // detect if a Preset has been used
+      einput = ecap.substring(0,5);
+      eoutput[0] = 1;
+    }
+    else if(ecap.substring(0,8) == "RECONFIG"){     // This is received everytime a change is made on older Extron Crosspoints
+      ExtronOutputQuery(ExtronVideoOutputPortSW1,1); // Finds current input for "ExtronVideoOutputPortSW1" that is connected to port 1 of the DD
+    }
+    else if(ecap.substring(amSizeSW1 + 6,amSizeSW1 + 9) == "Rpr" && automatrixSW1){ // detect if a Preset has been used 
+      einput = ecap.substring(amSizeSW1 + 6,amSizeSW1 + 11);
+      eoutput[0] = 1;
+    }
+    else if(ecap.substring(amSizeSW1 + 7,amSizeSW1 + 10) == "Rpr" && automatrixSW1){ // detect if a Preset has been used 
+      einput = ecap.substring(amSizeSW1 + 7,amSizeSW1 + 12);
+      eoutput[0] = 1;
+    }
+    else if(ecap.substring(0,3) == "In0" && ecap.substring(4,7) != "All" && ecap.substring(5,8) != "All" && automatrixSW1){ // start of automatrix
+      if(ecap.substring(0,4) == "In00"){
+        amSizeSW1 = ecap.length() - 7;
+        einput = ecap.substring(5,amSizeSW1 + 5);
+      }
+      else{
+        amSizeSW1 = ecap.length() - 6;
+        einput = ecap.substring(4,amSizeSW1 + 4);
+      }
+      uint8_t check = readAMstate(einput,amSizeSW1);
+      if(check != currentInputSW1){
+        currentInputSW1 = check;
+        if(currentInputSW1 == 0){
+          setTie(currentInputSW1,1);
+          sendProfile(0,EXTRON1,1);
+        }
+        else if(vinMatrix[0] == 1){
+          recallPreset(vinMatrix[currentInputSW1],1);
+        }
+        else if(vinMatrix[0] == 0 || vinMatrix[0] == 2){
+          setTie(currentInputSW1,1);          
+          sendProfile(currentInputSW1,EXTRON1,1);
+        }
+      }
+    }
+    else if(automatrixSW1 && (ecap.substring(0,10) == "00000000\r\n" || ecap.substring(0,14) == "000000000000\r\n"
+            || ecap.substring(0,18) == "0000000000000000\r\n" 
+            || ecap.substring(0,26) == "000000000000000000000000\r\n" 
+            || ecap.substring(0,34) == "00000000000000000000000000000000\r\n")){
+      extronSerial.write(VERB,5); // sets extron matrix switch to Verbose level 3
+    } // end of Verbose check
+    else{                             // less complex switches only report input status, no output status
+      einput = ecap.substring(0,4);
+      eoutput[0] = 1;
+    }
+
+
+    // For older Extron Crosspoints, where "RECONFIG" is sent when changes are made, the profile is only changed when a different input is selected for the defined output. (ExtronVideoOutputPortSW1)
+    // Without this, the profile would be resent when changes to other outputs are selected.
+    if(einput.substring(0,2) == "IN"){
+      int temp = einput.substring(2,4).toInt();
+      if(SRS == 0 && !S0 && temp > 0 && temp < 13 && temp == -1*currentProf) einput = "XX00";
+      else if(SRS == 0 && S0 && temp > 0 && temp < 12 && temp == -1*currentProf) einput = "XX00";
+      else if(temp == currentProf) einput = "XX00"; 
+    }
+
+    // for Extron devices, use remaining results to see which input is now active and change profile accordingly, cross-references eoutput[0]
+    if(((einput.substring(0,2) == "IN" || einput.substring(0,2) == "In") && eoutput[0] && !automatrixSW1) || (einput.substring(0,3) == "Rpr")){
+      if(einput.substring(0,3) == "Rpr"){
+        sendProfile(einput.substring(3,5).toInt(),EXTRON1,1);
+      }
+      else if(einput != "IN0 " && einput != "In0 " && einput != "In00"){ // for inputs 13-99 (SVS only)
+        sendProfile(einput.substring(2,4).toInt(),EXTRON1,1);
+      }
+      else if(einput == "IN0" || einput == "In0 " || einput == "In00"){
+        sendProfile(0,EXTRON1,1);
+      }
+    }
+
+    if(!automatrixSW1){
+      // VIKI Manual Switch Detection (created by: https://github.com/Arthrimus)
+      // ** hdmi output must be connected when powering on switch for ITE messages to appear, thus manual button detection working **
+
+      if(millis() - ITEtimer > 1200){  // Timer that disables sending SVS serial commands using the ITE mux data when there has recently been an autoswitch command (prevents duplicate commands)
+        listenITE[0] = 1;  // Sets listenITE[0] to 1 so the ITE mux data can be used to send SVS serial commands again
+        ITErecv[0] = 0; // Turns off ITErecv[0] so the SVS serial commands are not repeated if an autoswitch command preceeded the ITE commands
+        ITEtimer = millis(); // Resets timer to current millis() count to disable this function once the variables have been updated
+      }
+
+
+      if((ecap.substring(0,3) == "==>" || ecap.substring(15,18) == "==>") && listenITE[0]){   // checks if the serial command from the VIKI starts with "=" This indicates that the command is an ITE mux status message
+        if(ecap.substring(10,11) == "P"){        // checks the last value of the IT6635 mux. P3 points to inputs 1,2,3 / P2 points to inputs 4,5,6 / P1 input 7 / P0 input 8
+          ITEstatus[0] = ecap.substring(11,12).toInt();
+        }
+        if(ecap.substring(25,26) == "P"){        // checks the last value of the IT6635 mux. P3 points to inputs 1,2,3 / P2 points to inputs 4,5,6 / P1 input 7 / P0 input 8
+          ITEstatus[0] = ecap.substring(26,27).toInt();
+        }
+        if(ecap.substring(18,20) == ">0"){       // checks the value of the IT66535 IC that points to Dev->0. P2 is input 1 / P1 is input 2 / P0 is input 3
+          ITEstatus[1] = ecap.substring(12,13).toInt();
+        }
+        if(ecap.substring(33,35) == ">0"){       // checks the value of the IT66535 IC that points to Dev->0. P2 is input 1 / P1 is input 2 / P0 is input 3
+          ITEstatus[1] = ecap.substring(27,28).toInt();
+        }
+        if(ecap.substring(18,20) == ">1"){       // checks the value of the IT66535 IC that points to Dev->1. P2 is input 4 / P1 is input 5 / P0 is input 6
+          ITEstatus[2] = ecap.substring(12,13).toInt();
+        }
+        if(ecap.substring(33,35) == ">1"){       // checks the value of the IT66535 IC that points to Dev->1. P2 is input 4 / P1 is input 5 / P0 is input 6
+          ITEstatus[2] = ecap.substring(27,28).toInt();
+        }
+
+        ITErecv[0] = 1;                             // sets ITErecv[0] to 1 indicating that an ITE message has been received and an SVS command can be sent once the sendtimer elapses
+        sendtimer = millis();                    // resets sendtimer to millis()
+        ITEtimer = millis();                    // resets ITEtimer to millis()
+        MTVprevTime = millis();                 // delays disconnection detection timer so it wont interrupt
+      }
+
+
+      if((millis() - sendtimer > 300) && ITErecv[0]){ // wait 300ms to make sure all ITE messages are received in order to complete ITEstatus
+        if(ITEstatus[0] == 3){                   // Checks if port 3 of the IT6635 chip is currently selected
+          if(ITEstatus[1] == 2) ITEinputnum[0] = 1;   // Checks if port 2 of the IT66353 DEV0 chip is selected, Sets ITEinputnum[0] to input 1
+          else if(ITEstatus[1] == 1) ITEinputnum[0] = 2;   // Checks if port 1 of the IT66353 DEV0 chip is selected, Sets ITEinputnum[0] to input 2
+          else if(ITEstatus[1] == 0) ITEinputnum[0] = 3;   // Checks if port 0 of the IT66353 DEV0 chip is selected, Sets ITEinputnum[0] to input 3
+        }
+        else if(ITEstatus[0] == 2){                 // Checks if port 2 of the IT6635 chip is currently selected
+          if(ITEstatus[2] == 2) ITEinputnum[0] = 4;   // Checks if port 2 of the IT66353 DEV1 chip is selected, Sets ITEinputnum[0] to input 4
+          else if(ITEstatus[2] == 1) ITEinputnum[0] = 5;   // Checks if port 1 of the IT66353 DEV1 chip is selected, Sets ITEinputnum[0] to input 5
+          else if(ITEstatus[2] == 0) ITEinputnum[0] = 6;   // Checks if port 0 of the IT66353 DEV1 chip is selected, Sets ITEinputnum[0] to input 6
+        }
+        else if(ITEstatus[0] == 1) ITEinputnum[0] = 7;   // Checks if port 1 of the IT6635 chip is currently selected, Sets ITEinputnum[0] to input 7
+        else if(ITEstatus[0] == 0) ITEinputnum[0] = 8;   // Checks if port 0 of the IT6635 chip is currently selected, Sets ITEinputnum[0] to input 8
+
+        ITErecv[0] = 0;                              // sets ITErecv[0] to 0 to prevent the message from being resent
+        sendtimer = millis();                     // resets sendtimer to millis()
+      }
+
+      if(ecap.substring(0,5) == "Auto_" || ecap.substring(15,20) == "Auto_" || ITEinputnum[0] > 0) MTVddSW1 = true; // enable MT-VIKI disconnection detection if MT-VIKI switch is present
+
+      // for TESmart 4K60 / TESmart 4K30 / MT-VIKI HDMI switch on SW1
+      if(ecapbytes[4] == 17 || ecapbytes[3] == 17 || ecap.substring(0,5) == "Auto_" || ecap.substring(15,20) == "Auto_" || ITEinputnum[0] > 0){
+        if(ecapbytes[6] == 22 || ecapbytes[5] == 22 || ecapbytes[11] == 48 || ecapbytes[26] == 48 || ITEinputnum[0] == 1){
+          sendProfile(1,EXTRON1,1);
+          currentMTVinput[0] = 1;
+          MTVdiscon[0] = false;
+        }
+        else if(ecapbytes[6] == 23 || ecapbytes[5] == 23 || ecapbytes[11] == 49 || ecapbytes[26] == 49 || ITEinputnum[0] == 2){
+          sendProfile(2,EXTRON1,1);
+          currentMTVinput[0] = 2;
+          MTVdiscon[0] = false;
+        }
+        else if(ecapbytes[6] == 24 || ecapbytes[5] == 24 || ecapbytes[11] == 50 || ecapbytes[26] == 50 || ITEinputnum[0] == 3){
+          sendProfile(3,EXTRON1,1);
+          currentMTVinput[0] = 3;
+          MTVdiscon[0] = false;
+        }
+        else if(ecapbytes[6] == 25 || ecapbytes[5] == 25 || ecapbytes[11] == 51 || ecapbytes[26] == 51 || ITEinputnum[0] == 4){
+          sendProfile(4,EXTRON1,1);
+          currentMTVinput[0] = 4;
+          MTVdiscon[0] = false;
+        }
+        else if(ecapbytes[6] == 26 || ecapbytes[5] == 26 || ecapbytes[11] == 52 || ecapbytes[26] == 52 || ITEinputnum[0] == 5){
+          sendProfile(5,EXTRON1,1);
+          currentMTVinput[0] = 5;
+          MTVdiscon[0] = false;
+        }
+        else if(ecapbytes[6] == 27 || ecapbytes[5] == 27 || ecapbytes[11] == 53 || ecapbytes[26] == 53 || ITEinputnum[0] == 6){
+          sendProfile(6,EXTRON1,1);
+          currentMTVinput[0] = 6;
+          MTVdiscon[0] = false;
+        }
+        else if(ecapbytes[6] == 28 || ecapbytes[5] == 28 || ecapbytes[11] == 54 || ecapbytes[26] == 54 || ITEinputnum[0] == 7){
+          sendProfile(7,EXTRON1,1);
+          currentMTVinput[0] = 7;
+          MTVdiscon[0] = false;
+        }
+        else if(ecapbytes[6] == 29 || ecapbytes[5] == 29 || ecapbytes[11] == 55 || ecapbytes[26] == 55 || ITEinputnum[0] == 8){
+          sendProfile(8,EXTRON1,1);
+          currentMTVinput[0] = 8;
+          MTVdiscon[0] = false;
+        }
+        else if(ecapbytes[6] > 29 && ecapbytes[6] < 38){
+          sendProfile(ecapbytes[6] - 21,EXTRON1,1);
+        }
+        else if(ecapbytes[5] > 29 && ecapbytes[5] < 38){
+          sendProfile(ecapbytes[5] - 21,EXTRON1,1);
+        }
+
+        if(ecap.substring(0,5) == "Auto_" || ecap.substring(15,20) == "Auto_") listenITE[0] = 0; // Sets listenITE[0] to 0 so the ITE mux data will be ignored while an autoswitch command is detected.
+        ITEinputnum[0] = 0;                     // Resets ITEinputnum[0] to 0 so sendSVS will not repeat after this cycle through the void loop
+        ITEtimer = millis();                 // resets ITEtimer to millis()
+        MTVprevTime = millis();              // delays disconnection detection timer so it wont interrupt
+      }
+    
+      // if a MT-VIKI active port disconnection is detected, and then later a reconnection, resend the profile.
+      if(ecap.substring(24,41) == "IS_NON_INPUT_PORT"){
+        if(!MTVdiscon[0]) sendProfile(0,EXTRON1,0);
+        MTVdiscon[0] = true;
+      }
+      else if(ecap.substring(24,41) != "IS_NON_INPUT_PORT" && ecap.substring(0,11) == "Uart_RxData" && MTVdiscon[0]){
+        MTVdiscon[0] = false;
+        sendProfile(currentMTVinput[0],EXTRON1,1);
+      }
+
+
+      // for Otaku Games Scart Switch 1
+      if(ecap.substring(0,11) == "remote prof"){
+        if(ecap.substring(0,13) == "remote prof10"){
+          sendProfile(10,EXTRON1,1);
+        }
+        else if(ecap.substring(0,13) == "remote prof12"){
+          sendProfile(0,EXTRON1,1);
+        }
+        else if(ecap.substring(11,13).toInt() > 12){
+          sendProfile(ecap.substring(11,13).toInt(),EXTRON1,1);
+        }
+        else{
+          sendProfile(ecap.substring(11,12).toInt(),EXTRON1,1);
+        }
+      }
+    } // end of if(!automatrixSW1)
+
+  memset(ecapbytes,0,sizeof(ecapbytes)); // reset capture to all 0s
+  ecap = "00000000000000000000000000000000000000000000";
+  einput = "000000000000000000000000000000000000";
+
+} // end of readExtron1()
+
+void readExtron2(){
+
+
+    if(automatrixSW2){ // if automatrixSW2 is set "true" in options, then "0LS" is sent every 500ms to see if an input has changed
+      LS0time2(500);
+    }
+
+    if(MTVddSW2 && !automatrixSW2){ // if a MT-VIKI switch has been detected on SW2, then the currently active MT-VIKI hdmi port is checked for disconnection
+      MTVtime2(1500);
+    }
+
+    // listens to the Extron sw2 Port for changes
+    if(extronSerial2.available() > 0){ // if there is data available for reading, read
+    extronSerial2.readBytes(ecapbytes,44); // read in and store only the first 44 bytes for every status message received from 2nd Extron port
+      if(debugE2CAP){
+        Serial.print(F("ecap2 HEX: "));
+        for(uint8_t i=0;i<44;i++){
+          Serial.print(ecapbytes[i],HEX);Serial.print(F(" "));
+        }
+        Serial.println(F("\r"));
+        ecap = String((char *)ecapbytes);
+        Serial.print(F("ecap2 ASCII: "));Serial.println(ecap);
+      }
+    }
+    if(!debugE2CAP) ecap = String((char *)ecapbytes);
+
+    if((ecap.substring(0,3) == "Out" || ecap.substring(0,3) == "OUT") && !automatrixSW2){ // store only the input and output states, some Extron devices report output first instead of input
+      if(ecap.substring(4,5) == " "){
+        einput = ecap.substring(5,9);
+        if(ecap.substring(3,4).toInt() == ExtronVideoOutputPortSW2) eoutput[1] = 1;
+        else eoutput[1] = 0;
+      }
+      else{
+        einput = ecap.substring(6,10);
+        if(ecap.substring(3,5).toInt() == ExtronVideoOutputPortSW2) eoutput[1] = 1;
+        else eoutput[1] = 0;
+      }
+    }
+    else if(ecap.substring(0,1) == "F"){ // detect if switch has changed auto/manual states
+      einput = ecap.substring(4,8);
+      eoutput[1] = 1;
+    }
+    else if(ecap.substring(0,3) == "Rpr"){ // detect if a Preset has been used
+      einput = ecap.substring(0,5);
+      eoutput[1] = 1;
+    }
+    else if(ecap.substring(0,8) == "RECONFIG"){     // This is received everytime a change is made on older Extron Crosspoints.
+      ExtronOutputQuery(ExtronVideoOutputPortSW2,2); // Finds current input for "ExtronVideoOutputPortSW2" that is connected to port 2 of the DD
+    }
+    else if(ecap.substring(amSizeSW2 + 6,amSizeSW2 + 9) == "Rpr" && automatrixSW2){ // detect if a Preset has been used 
+      einput = ecap.substring(amSizeSW2 + 6,amSizeSW2 + 11);
+      eoutput[1] = 1;
+    }
+    else if(ecap.substring(amSizeSW2 + 7,amSizeSW2 + 10) == "Rpr" && automatrixSW2){ // detect if a Preset has been used 
+      einput = ecap.substring(amSizeSW2 + 7,amSizeSW2 + 12);
+      eoutput[1] = 1;
+    }
+    else if(ecap.substring(0,3) == "In0" && ecap.substring(4,7) != "All" && ecap.substring(5,8) != "All" && automatrixSW2){ // start of automatrix
+      if(ecap.substring(0,4) == "In00"){
+        amSizeSW2 = ecap.length() - 7;
+        einput = ecap.substring(5,amSizeSW2 + 5);
+      }
+      else{
+        amSizeSW2 = ecap.length() - 6;
+        einput = ecap.substring(4,amSizeSW2 + 4);
+      }
+      uint8_t check2 = readAMstate(einput,amSizeSW2);
+      if(check2 != currentInputSW2){
+        currentInputSW2 = check2;
+        if(currentInputSW2 == 0){
+          setTie(currentInputSW2,2);
+          sendProfile(0,EXTRON2,1);
+        }
+        else if(vinMatrix[0] == 1){
+          recallPreset(vinMatrix[currentInputSW2 + 32],2);
+        }
+        else if(vinMatrix[0] == 0 || vinMatrix[0] == 2){
+          setTie(currentInputSW2,2);          
+          sendProfile(currentInputSW2 + 100,EXTRON2,1);
+        }
+      }
+    }
+    else if(automatrixSW2 && (ecap.substring(0,10) == "00000000\r\n" || ecap.substring(0,14) == "000000000000\r\n"
+            || ecap.substring(0,18) == "0000000000000000\r\n" 
+            || ecap.substring(0,26) == "000000000000000000000000\r\n" 
+            || ecap.substring(0,34) == "00000000000000000000000000000000\r\n")){
+      extronSerial2.write(VERB,5); // sets extron matrix switch to Verbose level 3
+    } // end of Verbose check
+    else{                              // less complex switches only report input status, no output status
+      einput = ecap.substring(0,4);
+      eoutput[1] = 1;
+    }
+
+    // For older Extron Crosspoints, where "RECONFIG" is sent when changes are made, the profile is only changed when a different input is selected for the defined output. (ExtronVideoOutputPortSW2)
+    // Without this, the profile would be resent when changes to other outputs are selected.
+    if(einput.substring(0,2) == "IN" && einput.substring(2,4).toInt()+100 == currentProf) einput = "XX00";
+
+    // For Extron devices, use remaining results to see which input is now active and change profile accordingly, cross-references eoutput[1]
+    if(((einput.substring(0,2) == "IN" || einput.substring(0,2) == "In") && eoutput[1] && !automatrixSW2) || (einput.substring(0,3) == "Rpr")){
+      if(einput.substring(0,3) == "Rpr"){
+        sendProfile(einput.substring(3,5).toInt()+100,EXTRON2,1);
+      }
+      else if(einput != "IN0 " && einput != "In0 " && einput != "In00"){ // much easier method for switch 2 since ALL inputs will respond with SVS commands regardless of SRS option above
+        sendProfile(einput.substring(2,4).toInt()+100,EXTRON2,1);
+      }
+      else if(einput == "IN0" || einput == "In0 " || einput == "In00"){
+        sendProfile(0,EXTRON2,1);
+      }
+
+    }
+
+
+    if(!automatrixSW2){
+      // VIKI Manual Switch Detection (created by: https://github.com/Arthrimus)
+      // ** hdmi output must be connected when powering on switch for ITE messages to appear, thus manual button detection working **
+
+      if(millis() - ITEtimer2 > 1200){  // Timer that disables sending SVS serial commands using the ITE mux data when there has recently been an autoswitch command (prevents duplicate commands)
+        listenITE[1] = 1;  // Sets listenITE[1] to 1 so the ITE mux data can be used to send SVS serial commands again
+        ITErecv[1] = 0; // Turns off ITErecv[1] so the SVS serial commands are not repeated if an autoswitch command preceeded the ITE commands
+        ITEtimer2 = millis(); // Resets timer to current millis() count to disable this function once the variables hav been updated
+      }
+
+
+      if((ecap.substring(0,3) == "==>" || ecap.substring(15,18) == "==>") && listenITE[1]){   // checks if the serial command from the VIKI starts with "=" This indicates that the command is an ITE mux status message
+        if(ecap.substring(10,11) == "P"){       // checks the last value of the IT6635 mux. P3 points to inputs 1,2,3 / P2 points to inputs 4,5,6 / P1 input 7 / P0 input 8
+          ITEstatus2[0] = ecap.substring(11,12).toInt();
+        }
+        if(ecap.substring(25,26) == "P"){       // checks the last value of the IT6635 mux. P3 points to inputs 1,2,3 / P2 points to inputs 4,5,6 / P1 input 7 / P0 input 8
+          ITEstatus2[0] = ecap.substring(26,27).toInt();
+        }
+        if(ecap.substring(18,20) == ">0"){       // checks the value of the IT66535 IC that points to Dev->0. P2 is input 1 / P1 is input 2 / P0 is input 3
+          ITEstatus2[1] = ecap.substring(12,13).toInt();
+        }
+        if(ecap.substring(33,35) == ">0"){       // checks the value of the IT66535 IC that points to Dev->0. P2 is input 1 / P1 is input 2 / P0 is input 3
+          ITEstatus2[1] = ecap.substring(27,28).toInt();
+        }
+        if(ecap.substring(18,20) == ">1"){       // checks the value of the IT66535 IC that points to Dev->1. P2 is input 4 / P1 is input 5 / P0 is input 6
+          ITEstatus2[2] = ecap.substring(12,13).toInt();
+        }
+        if(ecap.substring(33,35) == ">1"){       // checks the value of the IT66535 IC that points to Dev->1. P2 is input 4 / P1 is input 5 / P0 is input 6
+          ITEstatus2[2] = ecap.substring(27,28).toInt();
+        }
+        ITErecv[1] = 1;                             // sets ITErecv[1] to 1 indicating that an ITE message has been received and an SVS command can be sent once the sendtimer elapses
+        sendtimer2 = millis();                    // resets sendtimer2 to millis()
+        ITEtimer2 = millis();                    // resets ITEtimer2 to millis()
+        MTVprevTime2 = millis();                 // delays disconnection detection timer so it wont interrupt
+      }
+
+
+      if((millis() - sendtimer2 > 300) && ITErecv[1]){ // wait 300ms to make sure all ITE messages are received in order to complete ITEstatus
+        if(ITEstatus2[0] == 3){                   // Checks if port 3 of the IT6635 chip is currently selected
+          if(ITEstatus2[1] == 2) ITEinputnum[1] = 1;   // Checks if port 2 of the IT66353 DEV0 chip is selected, Sets ITEinputnum to input 1
+          else if(ITEstatus2[1] == 1) ITEinputnum[1] = 2;   // Checks if port 1 of the IT66353 DEV0 chip is selected, Sets ITEinputnum to input 2
+          else if(ITEstatus2[1] == 0) ITEinputnum[1] = 3;   // Checks ITEstatus array position` 1 to determine if port 0 of the IT66353 DEV0 chip is selected, Sets ITEinputnum to input 3
+        }
+        else if(ITEstatus2[0] == 2){                 // Checks if port 2 of the IT6635 chip is currently selected
+          if(ITEstatus2[2] == 2) ITEinputnum[1] = 4;   // Checks if port 2 of the IT66353 DEV1 chip is selected, Sets ITEinputnum to input 4
+          else if(ITEstatus2[2] == 1) ITEinputnum[1] = 5;   // Checks if port 1 of the IT66353 DEV1 chip is selected, Sets ITEinputnum to input 5
+          else if(ITEstatus2[2] == 0) ITEinputnum[1] = 6;   // Checks if port 0 of the IT66353 DEV1 chip is selected, Sets ITEinputnum to input 6
+        }
+        else if(ITEstatus2[0] == 1) ITEinputnum[1] = 7;   // Checks if port 1 of the IT6635 chip is currently selected, Sets ITEinputnum to input 7
+        else if(ITEstatus2[0] == 0) ITEinputnum[1] = 8;   // Checks if port 0 of the IT6635 chip is currently selected, Sets ITEinputnum to input 8
+
+        ITErecv[1] = 0;                              // sets ITErecv[1] to 0 to prevent the message from being resent
+        sendtimer2 = millis();                     // resets sendtimer2 to millis()
+      }
+
+      if(ecap.substring(0,5) == "Auto_" || ecap.substring(15,20) == "Auto_" || ITEinputnum[1] > 0) MTVddSW2 = true; // enable MT-VIKI disconnection detection if MT-VIKI switch is present
+
+
+      // for TESmart 4K60 / TESmart 4K30 / MT-VIKI HDMI switch on SW2
+      if(ecapbytes[4] == 17 || ecapbytes[3] == 17 || ecap.substring(0,5) == "Auto_" || ecap.substring(15,20) == "Auto_" || ITEinputnum[1] > 0){
+        if(ecapbytes[6] == 22 || ecapbytes[5] == 22 || ecapbytes[11] == 48 || ecapbytes[26] == 48 || ITEinputnum[1] == 1){
+          sendProfile(101,EXTRON2,1);
+          currentMTVinput[1] = 101;
+          MTVdiscon[1] = false;
+        }
+        else if(ecapbytes[6] == 23 || ecapbytes[5] == 23 || ecapbytes[11] == 49 || ecapbytes[26] == 49 || ITEinputnum[1] == 2){
+          sendProfile(102,EXTRON2,1);
+          currentMTVinput[1] = 102;
+          MTVdiscon[1] = false;
+        }
+        else if(ecapbytes[6] == 24 || ecapbytes[5] == 24 || ecapbytes[11] == 50 || ecapbytes[26] == 50 || ITEinputnum[1] == 3){
+          sendProfile(103,EXTRON2,1);
+          currentMTVinput[1] = 103;
+          MTVdiscon[1] = false;
+        }
+        else if(ecapbytes[6] == 25 || ecapbytes[5] == 25 || ecapbytes[11] == 51 || ecapbytes[26] == 51 || ITEinputnum[1] == 4){
+          sendProfile(104,EXTRON2,1);
+          currentMTVinput[1] = 104;
+          MTVdiscon[1] = false;
+        }
+        else if(ecapbytes[6] == 26 || ecapbytes[5] == 26 || ecapbytes[11] == 52 || ecapbytes[26] == 52 || ITEinputnum[1] == 5){
+          sendProfile(105,EXTRON2,1);
+          currentMTVinput[1] = 105;
+          MTVdiscon[1] = false;
+        }
+        else if(ecapbytes[6] == 27 || ecapbytes[5] == 27 || ecapbytes[11] == 53 || ecapbytes[26] == 53 || ITEinputnum[1] == 6){
+          sendProfile(106,EXTRON2,1);
+          currentMTVinput[1] = 106;
+          MTVdiscon[1] = false;
+        }
+        else if(ecapbytes[6] == 28 || ecapbytes[5] == 28 || ecapbytes[11] == 54 || ecapbytes[26] == 54 || ITEinputnum[1] == 7){
+          sendProfile(107,EXTRON2,1);
+          currentMTVinput[1] = 107;
+          MTVdiscon[1] = false;
+        }
+        else if(ecapbytes[6] == 29 || ecapbytes[5] == 29 || ecapbytes[11] == 55 || ecapbytes[26] == 55 || ITEinputnum[1] == 8){
+          sendProfile(108,EXTRON2,1);
+          currentMTVinput[1] = 108;
+          MTVdiscon[1] = false;
+        }
+        else if(ecapbytes[6] > 29 && ecapbytes[6] < 38){
+          sendProfile(ecapbytes[6] + 79,EXTRON2,1);
+        }
+        else if(ecapbytes[5] > 29 && ecapbytes[5] < 38){
+          sendProfile(ecapbytes[5] + 79,EXTRON2,1);
+        }
+
+        if(ecap.substring(0,5) == "Auto_" || ecap.substring(15,20) == "Auto_") listenITE[1] = 0; // Sets listenITE[1] to 0 so the ITE mux data will be ignored while an autoswitch command is detected.
+        ITEinputnum[1] = 0;                     // Resets ITEinputnum[1] to 0 so sendSVS will not repeat after this cycle through the void loop
+        ITEtimer2 = millis();                 // resets ITEtimer2 to millis()
+        MTVprevTime2 = millis();              // delays disconnection detection timer so it wont interrupt
+      }
+
+      // if a MT-VIKI active port disconnection is detected, and then later a reconnection, resend the profile.
+      if(ecap.substring(24,41) == "IS_NON_INPUT_PORT"){
+        if(!MTVdiscon[1]) sendProfile(0,EXTRON2,0);
+        MTVdiscon[1] = true;
+      }
+      else if(ecap.substring(24,41) != "IS_NON_INPUT_PORT" && ecap.substring(0,11) == "Uart_RxData" && MTVdiscon[1]){
+        MTVdiscon[1] = false;
+        sendProfile(currentMTVinput[1],EXTRON2,1);
+
+      }    
+      
+      // for Otaku Games Scart Switch 2
+      if(ecap.substring(0,11) == "remote prof"){
+        if(ecap.substring(0,13) == "remote prof10"){
+          sendProfile(110,EXTRON2,1);
+        }
+        else if(ecap.substring(0,13) == "remote prof12"){
+          sendProfile(0,EXTRON2,1);
+        }
+        else{
+          sendProfile(ecap.substring(11,12).toInt()+100,EXTRON2,1);
+        }
+      }
+    } // end of !automatrixSW2
+
+  memset(ecapbytes,0,sizeof(ecapbytes)); // reset capture to 0s
+  ecap = "00000000000000000000000000000000000000000000";
+  einput = "000000000000000000000000000000000000";
+
+}// end of readExtron2()
+
+void readIR(){
+
+  uint8_t ir_recv_command = 0;
+  uint8_t ir_recv_address = 0;
+
+  if(TinyReceiverDecode()){
+
+    ir_recv_command = TinyIRReceiverData.Command;
+    ir_recv_address = TinyIRReceiverData.Address;
+
+    if(ir_recv_command != 0) RMTuse = 1;
+        
+    if(ir_recv_address == 73 && TinyIRReceiverData.Flags != IRDATA_FLAGS_IS_REPEAT && aux8button == 2){
+      if(ir_recv_command == 11){ // profile button 1
+        svsbutton += 1;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 7){ // profile button 2
+        svsbutton += 2;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 3){ // profile button 3
+        svsbutton += 3;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 10){ // profile button 4
+        svsbutton += 4;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 6){ // profile button 5
+        svsbutton += 5;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 2){ // profile button 6
+        svsbutton += 6;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 9){ // profile button 7
+        svsbutton += 7;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 5){ // profile button 8
+        svsbutton += 8;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 1){ // profile button 9
+        svsbutton += 9;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 37 || ir_recv_command == 38 || ir_recv_command == 39){ // profile buttons 10,11,12
+        svsbutton += 0;
+        nument++;
+        ir_recv_command = 0;
+      }
+      else if(ir_recv_command == 26){ // if you accidentally hit the aux8 button 2x + power, still power toggle tv
+        sendIR(auxpower,0,1); 
+        ir_recv_command = 0;
+        aux8button = 0;
+        svsbutton = "";
+        nument = 0;
+      }
+      else{
+        aux8button = 0;
+        svsbutton = "";
+        nument = 0;
+      }
+
+      
+    } // end of extrabutton == 2
+
+    if(ir_recv_address == 73 && TinyIRReceiverData.Flags != IRDATA_FLAGS_IS_REPEAT && aux8button == 1){ // if AUX8 was pressed and a profile button is pressed next,
+      if(ir_recv_command == 11){ // profile button 1                                                         // load "SVS" profiles 1 - 12 (profile button 1 - 12).
+        if(MTVir == 0 && TESmartir < 2)sendSVS(auxprof[0]);                                                               // Can be changed to "ANY" SVS profile in the OPTIONS section
+        if(MTVir == 1){extronSerialEwrite("viki",1,1);}
+        if(MTVir == 2){extronSerialEwrite("viki",1,2);}
+        if(TESmartir > 1){extronSerialEwrite("tesmart",1,2);sendSVS(101);}                                                                   
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 7){ // profile button 2
+        if(MTVir == 0 && TESmartir < 2)sendSVS(auxprof[1]);
+        if(MTVir == 1){extronSerialEwrite("viki",2,1);}
+        if(MTVir == 2){extronSerialEwrite("viki",2,2);}
+        if(TESmartir > 1){extronSerialEwrite("tesmart",2,2);sendSVS(102);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 3){ // profile button 3
+        if(MTVir == 0 && TESmartir < 2)sendSVS(auxprof[2]);
+        if(MTVir == 1){extronSerialEwrite("viki",3,1);}
+        if(MTVir == 2){extronSerialEwrite("viki",3,2);}
+        if(TESmartir > 1){extronSerialEwrite("tesmart",3,2);sendSVS(103);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 10){ // profile button 4
+        if(MTVir == 0 && TESmartir < 2)sendSVS(auxprof[3]);
+        if(MTVir == 1){extronSerialEwrite("viki",4,2);}
+        if(MTVir == 2){extronSerialEwrite("viki",4,2);}
+        if(TESmartir > 1){extronSerialEwrite("tesmart",4,2);sendSVS(104);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 6){ // profile button 5
+        if(MTVir == 0 && TESmartir < 2)sendSVS(auxprof[4]);
+        if(MTVir == 1){extronSerialEwrite("viki",5,1);}
+        if(MTVir == 2){extronSerialEwrite("viki",5,2);}
+        if(TESmartir > 1){extronSerialEwrite("tesmart",5,2);sendSVS(105);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 2){ // profile button 6
+        if(MTVir == 0 && TESmartir < 2)sendSVS(auxprof[5]);
+        if(MTVir == 1){extronSerialEwrite("viki",6,1);}
+        if(MTVir == 2){extronSerialEwrite("viki",6,2);}
+        if(TESmartir > 1){extronSerialEwrite("tesmart",6,2);sendSVS(106);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 9){ // profile button 7
+        if(MTVir == 0 && TESmartir < 2)sendSVS(auxprof[6]);
+        if(MTVir == 1){extronSerialEwrite("viki",7,1);}
+        if(MTVir == 2){extronSerialEwrite("viki",7,2);}
+        if(TESmartir > 1){extronSerialEwrite("tesmart",7,2);sendSVS(107);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 5){ // profile button 8
+        if(MTVir == 0 && TESmartir < 2)sendSVS(auxprof[7]);
+        if(MTVir == 1){extronSerialEwrite("viki",8,1);}
+        if(MTVir == 2){extronSerialEwrite("viki",8,2);}
+        if(TESmartir > 1){extronSerialEwrite("tesmart",8,2);sendSVS(108);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 1){ // profile button 9
+        if(TESmartir < 2)sendSVS(auxprof[8]);
+        if(TESmartir > 1){extronSerialEwrite("tesmart",9,2);sendSVS(109);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 37){ // profile button 10
+        if(TESmartir < 2)sendSVS(auxprof[9]);
+        if(TESmartir > 1){extronSerialEwrite("tesmart",10,2);sendSVS(110);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 38){ // profile button 11
+        if(TESmartir < 2)sendSVS(auxprof[10]);
+        if(TESmartir > 1){extronSerialEwrite("tesmart",11,2);sendSVS(111);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 39){ // profile button 12
+        if(TESmartir < 2)sendSVS(auxprof[11]);
+        if(TESmartir > 1){extronSerialEwrite("tesmart",12,2);sendSVS(112);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 56){ // aux1 button
+        if(TESmartir > 1){extronSerialEwrite("tesmart",13,2);sendSVS(113);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 57){ // aux2 button
+        if(TESmartir > 1){extronSerialEwrite("tesmart",14,2);sendSVS(114);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 58){ // aux3 button
+        if(TESmartir > 1){extronSerialEwrite("tesmart",15,2);sendSVS(115);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 59){ // aux4 button
+        if(TESmartir > 1){extronSerialEwrite("tesmart",16,2);sendSVS(116);}
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 26){ // (aux8 +) Power button
+        sendIR(auxpower,0,1);
+        ir_recv_command = 0;
+        aux8button = 0;
+      }
+      else if(ir_recv_command == 63){
+        ir_recv_command = 0;
+        aux8button++;
+      }
+      else{
+        aux8button = 0;
+        svsbutton = "";
+        nument = 0;
+      }
+      
+    } // end aux8button == 1
+
+
+    if(ir_recv_address == 73 && TinyIRReceiverData.Flags != IRDATA_FLAGS_IS_REPEAT && aux7button == 1){ // if AUX7 was pressed and a profile button is pressed next
+      if(TESmartir == 1 || TESmartir == 3){
+        if(ir_recv_command == 11){ // profile button 1
+          extronSerialEwrite("tesmart",1,1);sendSVS(1);                                                                    
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 7){ // profile button 2
+          extronSerialEwrite("tesmart",2,1);sendSVS(2); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 3){ // profile button 3
+          extronSerialEwrite("tesmart",3,1);sendSVS(3); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 10){ // profile button 4
+          extronSerialEwrite("tesmart",4,1);sendSVS(4); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 6){ // profile button 5
+          extronSerialEwrite("tesmart",5,1);sendSVS(5); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 2){ // profile button 6
+          extronSerialEwrite("tesmart",6,1);sendSVS(6); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 9){ // profile button 7
+          extronSerialEwrite("tesmart",7,1);sendSVS(7); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 5){ // profile button 8
+          extronSerialEwrite("tesmart",8,1);sendSVS(8); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 1){ // profile button 9
+          extronSerialEwrite("tesmart",9,1);sendSVS(9); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 37){ // profile button 10
+          extronSerialEwrite("tesmart",10,1);sendSVS(10); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 38){ // profile button 11
+          extronSerialEwrite("tesmart",11,1);sendSVS(11); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 39){ // profile button 12
+          extronSerialEwrite("tesmart",12,1);sendSVS(12); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 56){ // aux1 button
+          extronSerialEwrite("tesmart",13,1);sendSVS(13); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 57){ // aux2 button
+          extronSerialEwrite("tesmart",14,1);sendSVS(14); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 58){ // aux3 button
+          extronSerialEwrite("tesmart",15,1);sendSVS(15); 
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+        else if(ir_recv_command == 59){ // aux4 button
+          extronSerialEwrite("tesmart",16,1);sendSVS(16);
+          ir_recv_command = 0;
+          aux8button = 0;
+        }
+      }
+
+      aux7button = 0;
+    }
+
+    if(nument == 3){
+      sendSVS(svsbutton.toInt());
+      nument = 0;
+      svsbutton = "";
+      aux8button = 0;
+      ir_recv_command = 0;
+    }
+    
+    if(TinyIRReceiverData.Flags == IRDATA_FLAGS_IS_REPEAT){repeatcount++;} // directional buttons have to be held down for just a bit before repeating
+
+    if(ir_recv_address == 73 && TinyIRReceiverData.Flags != IRDATA_FLAGS_IS_REPEAT){ // block most buttons from being repeated when held
+      repeatcount = 0;
+      if(ir_recv_command == 63){
+        if(aux8button < 3)aux8button++;
+        else{ 
+          dualSerialPrintln("remote aux8");
+        }
+      }
+      else if(ir_recv_command == 62){
+        if(aux7button < 1)aux7button++;
+        else dualSerialPrintln("remote aux7");
+      }
+      else if(ir_recv_command == 61){
+        dualSerialPrintln("remote aux6");
+      }
+      else if(ir_recv_command == 60){
+        dualSerialPrintln("remote aud"); // remote aux5
+      }
+      else if(ir_recv_command == 59){
+        dualSerialPrintln("remote col"); // remote aux4
+      }
+      else if(ir_recv_command == 58){
+        dualSerialPrintln("remote aux3");
+      }
+      else if(ir_recv_command == 57){
+        dualSerialPrintln("remote aux2");
+      }
+      else if(ir_recv_command == 56){
+        dualSerialPrintln("remote aux1");
+      }
+      else if(ir_recv_command == 52){
+        dualSerialPrintln("remote res1");
+      }
+      else if(ir_recv_command == 53){
+        dualSerialPrintln("remote res2");
+      }
+      else if(ir_recv_command == 54){
+        dualSerialPrintln("remote res3");
+      }
+      else if(ir_recv_command == 55){
+        dualSerialPrintln("remote res4");
+      }
+      else if(ir_recv_command == 51){
+        dualSerialPrintln("remote res480p");
+      }
+      else if(ir_recv_command == 50){
+        dualSerialPrintln("remote res1440p");
+      }
+      else if(ir_recv_command == 49){
+        dualSerialPrintln("remote res1080p");
+      }
+      else if(ir_recv_command == 48){
+        dualSerialPrintln("remote res4k");
+      }
+      else if(ir_recv_command == 47){
+        dualSerialPrintln("remote buffer");
+      }
+      else if(ir_recv_command == 44){
+        dualSerialPrintln("remote genlock");
+      }
+      else if(ir_recv_command == 46){
+        dualSerialPrintln("remote safe");
+      }
+      else if(ir_recv_command == 86){
+        dualSerialPrintln("remote pause");
+      }
+      else if(ir_recv_command == 45){
+        dualSerialPrintln("remote phase");
+      }
+      else if(ir_recv_command == 43){
+        dualSerialPrintln("remote gain");
+      }
+      else if(ir_recv_command == 36){
+        dualSerialPrintln("remote prof");
+      }
+      else if(ir_recv_command == 11){
+        sendRBP(1);
+        if(RT5Xir >= 1){sendIR("5x",1,1);delay(30);sendIR("5x",1,1);} // RT5X profile 1
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",1,3);} // OSSC profile 1
+      }
+      else if(ir_recv_command == 7){
+        sendRBP(2);
+        if(RT5Xir >= 1){sendIR("5x",2,1);delay(30);sendIR("5x",2,1);} // RT5X profile 2
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",2,3);} // OSSC profile 2
+      }
+      else if(ir_recv_command == 3){
+        sendRBP(3);
+        if(RT5Xir >= 1){sendIR("5x",3,1);delay(30);sendIR("5x",3,1);} // RT5X profile 3
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",3,3);} // OSSC profile 3
+      }
+      else if(ir_recv_command == 10){
+        sendRBP(4);
+        if(RT5Xir >= 1){sendIR("5x",4,1);delay(30);sendIR("5x",4,1);} // RT5X profile 4
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",4,3);} // OSSC profile 4
+      }
+      else if(ir_recv_command == 6){
+        sendRBP(5);
+        if(RT5Xir >= 1){sendIR("5x",5,1);delay(30);sendIR("5x",5,1);} // RT5X profile 5
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",5,3);} // OSSC profile 5
+      }
+      else if(ir_recv_command == 2){
+        sendRBP(6);
+        if(RT5Xir >= 1){sendIR("5x",6,1);delay(30);sendIR("5x",6,1);} // RT5X profile 6
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",6,3);} // OSSC profile 6
+      }
+      else if(ir_recv_command == 9){
+        sendRBP(7);
+        if(RT5Xir >= 1){sendIR("5x",7,1);delay(30);sendIR("5x",7,1);} // RT5X profile 7
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",7,3);} // OSSC profile 7
+      }
+      else if(ir_recv_command == 5){
+        sendRBP(8);
+        if(RT5Xir >= 1){sendIR("5x",8,1);delay(30);sendIR("5x",8,1);} // RT5X profile 8
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",8,3);} // OSSC profile 8
+      }
+      else if(ir_recv_command == 1){
+        sendRBP(9);
+        if(RT5Xir >= 1){sendIR("5x",9,1);delay(30);sendIR("5x",9,1);} // RT5X profile 9
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",9,3);} // OSSC profile 9
+      }
+      else if(ir_recv_command == 37){
+        sendRBP(10);
+        if(RT5Xir >= 1){sendIR("5x",10,1);delay(30);sendIR("5x",10,1);} // RT5X profile 10
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1){sendIR("ossc",10,3);} // OSSC profile 10
+      }
+      else if(ir_recv_command == 38){
+        sendRBP(11);
+        if(OSSCir == 1){sendIR("ossc",11,3);} // OSSC profile 11
+      }
+      else if(ir_recv_command == 39){
+        sendRBP(12);
+        if(OSSCir == 1){sendIR("ossc",12,3);} // OSSC profile 12
+      }
+      else if(ir_recv_command == 35){
+        dualSerialPrintln("remote adc");
+      }
+      else if(ir_recv_command == 34){
+        dualSerialPrintln("remote sfx");
+      }
+      else if(ir_recv_command == 33){
+        dualSerialPrintln("remote scaler");
+      }
+      else if(ir_recv_command == 32){
+        dualSerialPrintln("remote output");
+      }
+      else if(ir_recv_command == 17){
+        dualSerialPrintln("remote input");
+      }
+      else if(ir_recv_command == 41){
+        dualSerialPrintln("remote stat");
+      }
+      else if(ir_recv_command == 40){
+        dualSerialPrintln("remote diag");
+      }
+      else if(ir_recv_command == 66){
+        dualSerialPrintln("remote back");
+      }
+      else if(ir_recv_command == 83){
+        dualSerialPrintln("remote ok");
+      }
+      else if(ir_recv_command == 79){
+        dualSerialPrintln("remote right");
+      }
+      else if(ir_recv_command == 16){
+        dualSerialPrintln("remote down");
+      }
+      else if(ir_recv_command == 87){
+        dualSerialPrintln("remote left");
+      }
+      else if(ir_recv_command == 24){
+        dualSerialPrintln("remote up");
+      }
+      else if(ir_recv_command == 92){
+        dualSerialPrintln("remote menu");
+      }
+      else if(ir_recv_command == 26){ // power button
+        Serial.println(F("\rpwr on\r")); // wake
+        Serial.println(F("\rremote pwr\r")); // sleep
+        #if usbMode
+        usbHost.tcmd = "wakesleep";
+        #endif
+        RTwake = true;
+      }
+    }
+    else if(ir_recv_address == 73 && repeatcount > 4){ // directional buttons have to be held down for just a bit before repeating
+      if(ir_recv_command == 24){
+        dualSerialPrintln("remote up");
+      }
+      else if(ir_recv_command == 16){
+        dualSerialPrintln("remote down");
+      }
+      else if(ir_recv_command == 87){
+        dualSerialPrintln("remote left");
+      }
+      else if(ir_recv_command == 79){
+        dualSerialPrintln("remote right");
+      }
+    } // end of if(ir_recv_address
+    
+    if(ir_recv_address == 73 && repeatcount > 15){ // when directional buttons are held down for even longer... turbo directional mode
+      if(ir_recv_command == 87){
+        for(uint8_t i=0;i<4;i++){
+          dualSerialPrintln("remote left");
+        }
+      }
+      else if(ir_recv_command == 79){
+        for(uint8_t i=0;i<4;i++){
+          dualSerialPrintln("remote right");
+        }
+      }
+    } // end of turbo directional mode
+
+
+    if(ir_recv_address == 124 && TinyIRReceiverData.Flags != IRDATA_FLAGS_IS_REPEAT){ // OSSC remote, nothing defined atm. (124 dec is 7C hex)
+      if(ir_recv_command == 148){} // 1 button
+      else if(ir_recv_command == 149){} // 2 button
+      else if(ir_recv_command == 150){} // 3 button
+      else if(ir_recv_command == 151){} // 4 button
+      else if(ir_recv_command == 152){} // 5 button
+      else if(ir_recv_command == 153){} // 6 button
+      else if(ir_recv_command == 154){} // 7 button
+      else if(ir_recv_command == 155){} // 8 button
+      else if(ir_recv_command == 156){} // 9 button
+      else if(ir_recv_command == 147){} // 0 button
+      else if(ir_recv_command == 157){} // 10+ --/- button
+      else if(ir_recv_command == 158){} // return <__S--> button
+      else if(ir_recv_command == 180){} // up button
+      else if(ir_recv_command == 179){} // down button
+      else if(ir_recv_command == 181){} // left button
+      else if(ir_recv_command == 182){} // right button
+      else if(ir_recv_command == 184){} // ok button
+      else if(ir_recv_command == 178){} // menu button
+      else if(ir_recv_command == 173){} // L/R button
+      else if(ir_recv_command == 139){} // cancel / PIC & clock & zoom button
+      else if(ir_recv_command == 183){} // exit button
+      else if(ir_recv_command == 166){} // info button
+      else if(ir_recv_command == 131){} // red pause button
+      else if(ir_recv_command == 130){} // green play button
+      else if(ir_recv_command == 133){} // yellow stop button
+      else if(ir_recv_command == 177){} // blue eject button
+      else if(ir_recv_command == 186){} // >>| next button
+      else if(ir_recv_command == 185){} // |<< previous button
+      else if(ir_recv_command == 134){} // << button
+      else if(ir_recv_command == 135){} // >> button
+      else if(ir_recv_command == 128){} // Power button
+    }
+    else if(ir_recv_address == 122 && TinyIRReceiverData.Flags != IRDATA_FLAGS_IS_REPEAT){ // 122 is 7A hex
+      if(ir_recv_command == 27){} // tone- button
+      else if(ir_recv_command == 26){} // tone+ button
+    }
+    else if(ir_recv_address == 56 && TinyIRReceiverData.Flags != IRDATA_FLAGS_IS_REPEAT){ // 56 is 38 hex
+      if(ir_recv_command == 14){} // vol+ button
+      else if(ir_recv_command == 15){} // vol- button
+      else if(ir_recv_command == 10){} // ch+ button
+      else if(ir_recv_command == 11){} // ch- button
+      else if(ir_recv_command == 18){} // p.n.s. button
+      else if(ir_recv_command == 19){} // tv/av button
+      else if(ir_recv_command == 24){} // mute speaker button
+      //else if(ir_recv_command == ){} // TV button , I dont believe these are NEC based
+      //else if(ir_recv_command == ){} // SAT / DVB button ... ^^^
+      //else if(ir_recv_command == ){} // DVD / HIFI button ... ^^^
+      
+    } // end of OSSC remote
+    
+  } // end of TinyReceiverDecode()
+
+} // end of readIR()
+
+void sendIR(String type, uint8_t prof, uint8_t repeat){
+  IRsend irsend;
+  if(type == "5x" || type == "5X"){
+    if(prof == 1){irsend.sendNEC(0xB3,0x92,repeat);} // RT5X profile 1 
+    else if(prof == 2){irsend.sendNEC(0xB3,0x93,repeat);} // RT5X profile 2
+    else if(prof == 3){irsend.sendNEC(0xB3,0xCC,repeat);} // RT5X profile 3
+    else if(prof == 4){irsend.sendNEC(0xB3,0x8E,repeat);} // RT5X profile 4
+    else if(prof == 5){irsend.sendNEC(0xB3,0x8F,repeat);} // RT5X profile 5
+    else if(prof == 6){irsend.sendNEC(0xB3,0xC8,repeat);} // RT5X profile 6
+    else if(prof == 7){irsend.sendNEC(0xB3,0x8A,repeat);} // RT5X profile 7
+    else if(prof == 8){irsend.sendNEC(0xB3,0x8B,repeat);} // RT5X profile 8
+    else if(prof == 9){irsend.sendNEC(0xB3,0xC4,repeat);} // RT5X profile 9
+    else if(prof == 10){irsend.sendNEC(0xB3,0x87,repeat);} // RT5X profile 10
+  }
+  else if(type == "4k" || type == "4K"){
+    if(prof == 1){irsend.sendNEC(0x49,0x0B,repeat);} // RT4K profile 1 
+    else if(prof == 2){irsend.sendNEC(0x49,0x07,repeat);} // RT4K profile 2
+    else if(prof == 3){irsend.sendNEC(0x49,0x03,repeat);} // RT4K profile 3
+    else if(prof == 4){irsend.sendNEC(0x49,0x0A,repeat);} // RT4K profile 4
+    else if(prof == 5){irsend.sendNEC(0x49,0x06,repeat);} // RT4K profile 5
+    else if(prof == 6){irsend.sendNEC(0x49,0x02,repeat);} // RT4K profile 6
+    else if(prof == 7){irsend.sendNEC(0x49,0x09,repeat);} // RT4K profile 7
+    else if(prof == 8){irsend.sendNEC(0x49,0x05,repeat);} // RT4K profile 8
+    else if(prof == 9){irsend.sendNEC(0x49,0x01,repeat);} // RT4K profile 9
+    else if(prof == 10){irsend.sendNEC(0x49,0x25,repeat);} // RT4K profile 10
+    else if(prof == 11){irsend.sendNEC(0x49,0x26,repeat);} // RT4K profile 11
+    else if(prof == 12){irsend.sendNEC(0x49,0x27,repeat);} // RT4K profile 12
+  }
+  else if(type == "OSSC" || type == "ossc"){
+    irsend.sendNEC(0x7C,0xB7,repeat); // exit
+    delay(100);
+    irsend.sendNEC(0x7C,0xB7,repeat); // exit 
+    delay(100);
+    irsend.sendNEC(0x7C,0x9D,repeat); // 10+ button
+    delay(400);
+    //if(prof == 0){irsend.sendNEC(0x7C,0x93,repeat);} // OSSC profile 0 not used atm
+    if(prof == 1){irsend.sendNEC(0x7C,0x94,repeat);} // OSSC profile 1 
+    else if(prof == 2){irsend.sendNEC(0x7C,0x95,repeat);} // OSSC profile 2
+    else if(prof == 3){irsend.sendNEC(0x7C,0x96,repeat);} // OSSC profile 3
+    else if(prof == 4){irsend.sendNEC(0x7C,0x97,repeat);} // OSSC profile 4
+    else if(prof == 5){irsend.sendNEC(0x7C,0x98,repeat);} // OSSC profile 5
+    else if(prof == 6){irsend.sendNEC(0x7C,0x99,repeat);} // OSSC profile 6
+    else if(prof == 7){irsend.sendNEC(0x7C,0x9A,repeat);} // OSSC profile 7
+    else if(prof == 8){irsend.sendNEC(0x7C,0x9B,repeat);} // OSSC profile 8
+    else if(prof == 9){irsend.sendNEC(0x7C,0x9C,repeat);} // OSSC profile 9
+    else if(prof == 10){irsend.sendNEC(0x7C,0x9D,repeat);delay(400);irsend.sendNEC(0x7C,0x93,repeat);} // OSSC profile 10
+    else if(prof == 11){irsend.sendNEC(0x7C,0x9D,repeat);delay(400);irsend.sendNEC(0x7C,0x94,repeat);} // OSSC profile 11
+    else if(prof == 12){irsend.sendNEC(0x7C,0x9D,repeat);delay(400);irsend.sendNEC(0x7C,0x95,repeat);} // OSSC profile 12
+    else if(prof == 13){irsend.sendNEC(0x7C,0x9D,repeat);delay(400);irsend.sendNEC(0x7C,0x96,repeat);} // OSSC profile 13
+    else if(prof == 14){irsend.sendNEC(0x7C,0x9D,repeat);delay(400);irsend.sendNEC(0x47C,0x97,repeat);} // OSSC profile 14
+  }
+  else if(type == "LG"){ // LG TV
+      irsend.sendNEC(0x04,0x08,repeat); // Power button
+      irsend.sendNEC(0x00,0x00,3);
+      delay(50);
+      irsend.sendNEC(0x04,0x08,repeat); // send once more
+      irsend.sendNEC(0x00,0x00,3);
+  }
+  
+} // end of sendIR()
+
+int fetchGameIDProf(String gameID,int dp){ // looks at gameDB for a gameID -> profile match
+  for(int i = 0; i < gameDBSize; i++){      // returns "DefaultProf" for console if nothing found and S0_gameID = true
+    if(gameDB[i][1] == gameID){            // returns "-1" (meaning dont change anything) if nothing found and S0_gameID = false
+      return gameDB[i][2].toInt();
+      break;
+   }
+  }  
+
+  if(S0_gameID) return dp;
+  else return -1;
+}  // end of fetchGameIDProf()
 
 String replaceDomainWithIP(String input){
   String result = input;
@@ -376,33 +1961,337 @@ String replaceDomainWithIP(String input){
 bool isIPAddress(String str){
   IPAddress ip;
   return ip.fromString(str);  // Returns true if the string is a valid IP address
-}
+} // end of isIPAddress()
 
-void sendProfile(int num){
-  analogWrite(LED_GREEN,222);
-  if(num >= 0){
-    Serial0.print(F("\rSVS NEW INPUT="));
-    Serial0.print(num);;
-    Serial0.println(F("\r"));
-    delay(1000);
-    Serial0.print(F("\rSVS CURRENT INPUT="));
-    Serial0.print(num);
-    Serial0.println(F("\r"));
+void sendRTwake(uint16_t mil){
+    currentTime = millis();
+    if(prevTime == 0)
+      prevTime = millis();
+    if((currentTime - prevTime) >= mil){
+      prevTime = 0;
+      prevBlinkTime = 0;
+      currentTime = 0;
+      RTwake = false;
+      digitalWrite(LED_BUILTIN,LOW);
+      if(((SRS == 1 || !S0) && currentProf != 0) || (SRS != 1 && S0 && (currentProf != -12 && currentProf != 0))){
+        if(currentProf > 0)
+          sendSVS(currentProf);
+        else
+          sendRBP(-1*currentProf);
+      }
+    }
+    if(currentTime - prevBlinkTime >= 300){
+      prevBlinkTime = currentTime;
+      if(digitalRead(LED_BUILTIN) == LOW)digitalWrite(LED_BUILTIN,HIGH);
+      else digitalWrite(LED_BUILTIN,LOW);
+    }
+} // end of sendRTwake()
+
+void LS0time1(unsigned long eTime){
+  LScurrentTime = millis();  // Init timer
+  if(LSprevTime == 0)       // If previous timer not initialized, do so now.
+    LSprevTime = millis();
+  if((LScurrentTime - LSprevTime) >= eTime){ // If it's been longer than eTime, send "0LS" and reset the timer.
+    LScurrentTime = 0;
+    LSprevTime = 0;
+    extronSerial.print(F("0LS"));
+    delay(20);
+ }
+} // end of LS0time1()
+
+void LS0time2(unsigned long eTime){
+  LScurrentTime2 = millis();  // Init timer
+  if(LSprevTime2 == 0)       // If previous timer not initialized, do so now.
+    LSprevTime2 = millis();
+  if((LScurrentTime2 - LSprevTime2) >= eTime){ // If it's been longer than eTime, send "0LS" and reset the timer.
+    LScurrentTime2 = 0;
+    LSprevTime2 = 0;
+    extronSerial2.print(F("0LS"));
+    delay(20);
+ }
+} // end of LS0time2()
+
+void DStime(unsigned long eTime){
+  DScurrentTime = millis();  // Init timer
+  if(DSprevTime == 0)       // If previous timer not initialized, do so now.
+    DSprevTime = millis();
+  if((DScurrentTime - DSprevTime) >= eTime){ // If it's been longer than eTime, sendProfile() and reset the timer.
+    DScurrentTime = 0;
+    DSprevTime = 0;
+    delaySend = false;
+    sendProfile(delayProf,GAMEID1,1);
+    delayProf = 0;
+ }
+} // end of DStime()
+
+void setTie(uint8_t num, uint8_t sw){
+  if(sw == 1){
+    if(vinMatrix[0] == 0){
+      extronSerial.print(num);
+      extronSerial.print(F("*"));
+      extronSerial.print(F("!"));
+    }
+    else if(vinMatrix[0] == 2){
+      extronSerial.print(num);
+      extronSerial.print(F("*"));
+      extronSerial.print(ExtronVideoOutputPortSW1);
+      extronSerial.print(F("!"));
+    }
   }
-  else if(num < 0){
-    Serial0.print(F("\rremote prof"));
-    Serial0.print((-1) * num);
-    Serial0.println(F("\r"));
+  else if(sw == 2){
+    if(vinMatrix[0] == 0){
+      extronSerial2.print(num);
+      extronSerial2.print(F("*"));
+      extronSerial2.print(F("!"));
+    }
+    else if(vinMatrix[0] == 2){
+      extronSerial2.print(num);
+      extronSerial2.print(F("*"));
+      extronSerial2.print(ExtronVideoOutputPortSW2);
+      extronSerial2.print(F("!"));
+    }
   }
-  analogWrite(LED_GREEN,255);
-} 
+} // end of setTie()
+
+void recallPreset(uint8_t num, uint8_t sw){
+  if(sw == 1){
+    extronSerial.print(num);
+    extronSerial.print(F("."));
+  }
+  else if(sw == 2){
+    extronSerial2.print(num);
+    extronSerial2.print(F("."));
+  }
+} // end of recallPreset()
+
+void sendSVS(uint16_t num){
+  #if usbMode // sends VGA Serial commands as well (green & red leds light up)
+  usbHost.cprof = String(num); 
+  #endif
+
+  digitalWrite(LED_BUILTIN,HIGH);
+  Serial.print(F("\rSVS NEW INPUT="));
+  if(num != 0)Serial.print(num + offset);
+  else Serial.print(num);;
+  Serial.println(F("\r"));
+  delay(1000);
+  Serial.print(F("\rSVS CURRENT INPUT="));
+  if(num != 0)Serial.print(num + offset);
+  else Serial.print(num);
+  Serial.println(F("\r"));
+  digitalWrite(LED_BUILTIN,LOW);
+  currentProf = num;
+} // end of sendSVS()
+
+void sendRBP(int prof){ // send Remote Button Profile
+  #if usbMode // sends VGA Serial commands as well
+  usbHost.cprof = String(-1*prof);
+  #endif
+  Serial.print(F("\rremote prof"));
+  Serial.print(prof);
+  Serial.println(F("\r"));
+  currentProf = -1*prof; // always store remote button profiles as negative numbers
+  #if !usbMode // add the 1s red led indicator after the VGA Serial command is sent
+  digitalWrite(LED_BUILTIN,HIGH);
+  delay(1000);
+  digitalWrite(LED_BUILTIN,LOW);
+  #endif
+} // end of sendRBP()
+
+void dualSerialPrintln(String str){
+  str = "\r" + str + "\r\n";
+  Serial.println(str);
+  #if usbMode
+  usbHost.tcmd = str;
+  #endif
+} // end of dualSerialPrintln()
+
+void MTVtime1(unsigned long eTime){
+  MTVcurrentTime = millis();  // Init timer
+  if(MTVprevTime == 0)       // If previous timer not initialized, do so now.
+    MTVprevTime = millis();
+  if((MTVcurrentTime - MTVprevTime) >= eTime){ // If it's been longer than eTime, send MT-VIKI serial command for current input, see if it responds with disconnected, and reset the timer.
+    MTVcurrentTime = 0;
+    MTVprevTime = 0;
+    extronSerialEwrite("viki",currentMTVinput[0],1);
+    delay(50);
+ }
+}  // end of MTVtime1()
+
+void MTVtime2(unsigned long eTime){
+  MTVcurrentTime2 = millis();  // Init timer
+  if(MTVprevTime2 == 0)       // If previous timer not initialized, do so now.
+    MTVprevTime2 = millis();
+  if((MTVcurrentTime2 - MTVprevTime2) >= eTime){ // If it's been longer than eTime, send MT-VIKI serial command for current input, see if it responds with disconnected, and reset the timer.
+    MTVcurrentTime2 = 0;
+    MTVprevTime2 = 0;
+    extronSerialEwrite("viki",currentMTVinput[1] - 100,2);
+    delay(50);
+ }
+} // end of MTVtime2()
+
+void ExtronOutputQuery(uint8_t outputNum, uint8_t sw){
+  char cmd[6]; 
+  uint8_t len = 0;
+  cmd[len++] = 'v';
+  char buff[4];
+  itoa(outputNum,buff,10);
+  for(char* p = buff; *p; p++){
+    cmd[len++] = *p;
+  }
+  cmd[len++] = '%';
+  if(sw == 1)
+    extronSerial.write((uint8_t *)cmd,len);
+  else if(sw == 2)
+    extronSerial2.write((uint8_t *)cmd,len);
+
+  delay(50);
+} // end of ExtronOutputQuery()
+
+void extronSerialEwrite(String type, uint8_t value, uint8_t sw){
+  if(type == "viki"){
+    viki[2] = byte(value - 1);
+    if(sw == 1)
+      extronSerial.write(viki,4);
+    else if(sw == 2)
+      extronSerial2.write(viki,4);
+  }
+  else if(type == "tesmart"){
+    tesmart[4] = byte(value);
+    if(sw == 1)
+      extronSerial.write(tesmart,6);
+    else if(sw == 2)
+      extronSerial2.write(tesmart,6);
+  }
+  delay(50);
+}  // end of extronSerialEwrite()
+
+
+void sendProfile(int sprof, uint8_t sname, uint8_t soverride){
+
+  // make sure the "No Match Profile" in DonutShop matches it's switch's auto-profile for fallback to work properly
+  if(mswitch[GAMEID1].On){
+    int gprof = 0;
+    int gdprof = 0;
+    for(uint8_t i=0;i < consolesSize;i++){
+      if(consoles[i].King == 1){
+        if(SRS == 0 && sprof > 0 && sprof < 12){
+            gdprof = (-1)*consoles[i].DefaultProf;
+            gprof = consoles[i].Prof;
+        }
+        else{
+          gdprof = consoles[i].DefaultProf;
+          gprof = consoles[i].Prof;
+        }
+      }
+    }
+    if(sname != GAMEID1 && sprof == gdprof){
+      for(uint8_t i=0;i < mswitchSize;i++){
+        if(i != GAMEID1){
+          mswitch[i].King = 0;
+        }
+      }
+      delaySend = true; 
+      delayProf = gprof;
+      return;
+    }
+  }
+
+  // if GAMEID1 profile is the same as current profile, do not resend profile
+  for(uint8_t i=0;i < mswitchSize;i++){
+    if(sname == GAMEID1 && i != GAMEID1 && sprof == mswitch[i].Prof && mswitch[i].King == 1){
+      mswitch[i].King = 0;
+      mswitch[GAMEID1].On = 1;
+      mswitch[GAMEID1].King = 1;
+      mswitch[GAMEID1].Prof = sprof;
+      return;
+    }
+  }
+
+  if(sprof != 0){
+    mswitch[sname].On = 1;
+    if(SRS == 0 && sname == EXTRON1 && sprof > 0 && sprof < 12){ // save RBP as negative number
+      mswitch[sname].Prof = -1*sprof;
+    }
+    else{
+      mswitch[sname].Prof = sprof;
+    }
+    if(mswitch[sname].Prof == currentProf && !soverride) return;
+    uint8_t prevOrder = mswitch[sname].Order;
+    for(uint8_t i = 0;i < mswitchSize;i++){
+      if(i == sname){
+        mswitch[i].Order = 0;
+        mswitch[i].King = 1;
+      }
+      else{
+        mswitch[i].King = 0;
+        if(mswitch[i].Order < prevOrder) mswitch[i].Order++;
+      }
+    }
+
+    if(sname == EXTRON1){ // sendIR to RT5X / OSSC
+      if(sprof < 11){
+        if(RT5Xir == 1)sendIR("5x",sprof,2); // RT5X profile
+        if(RT5Xir && OSSCir)delay(500);
+        if(OSSCir == 1)sendIR("ossc",sprof,3); // OSSC profile
+      }
+      else if(OSSCir == 1 && sprof > 11 && sprof < 15){
+        sendIR("ossc",sprof,3); // OSSC profile
+      }
+      else if(RT5Xir == 4){
+        sendIR("5x",sprof - 12,2); // RT5X profile
+      }
+    }
+    else if(RT5Xir == 3 && sname == EXTRON2 && sprof < 11){
+      sendIR("5x",sprof,2); // RT5X profile 1
+    }
+
+    if(SRS == 0 && !S0 && sname == EXTRON1 && sprof > 0 && sprof < 13){ sendRBP(sprof); }
+    else if(SRS == 0 && S0 && sname == EXTRON1 && sprof > 0 && sprof < 12){ sendRBP(sprof); }
+    else if(sprof < 0){ sendRBP(-1*sprof); } // only RBP from GAMEID
+    else if(sname == GAMEID1){ sendSVS(sprof - offset); }
+    else { sendSVS(sprof); } // everything else
+  }
+  else if(sprof == 0){ // all inputs are off, set attributes to 0, find a console that is On starting at the top of the list, set as King, send profile
+    mswitch[sname].On = 0;
+    mswitch[sname].Prof = 0;
+    if(mswitch[sname].King == 1){
+      int bestIdx = -1;
+      uint8_t bestO = mswitchSize;
+      for(uint8_t i=0;i < mswitchSize;i++){
+        if(mswitch[i].On && mswitch[i].Order < bestO){
+          bestO = mswitch[i].Order;
+          bestIdx = i;
+        }
+      }
+      for(uint8_t i=0;i < mswitchSize;i++){
+        mswitch[i].King = 0;
+      }
+      if(bestIdx != -1){ 
+        mswitch[bestIdx].King = 1;
+        if(mswitch[bestIdx].Prof < 0) sendRBP(-1*mswitch[bestIdx].Prof); 
+        else if(sname == GAMEID1) sendSVS(mswitch[bestIdx].Prof - offset);
+        else sendSVS(mswitch[bestIdx].Prof);
+        return;
+      }
+    } // end of if King == 1
+    uint8_t count = 0;
+    for(uint8_t m=0;m < mswitchSize;m++){
+      if(mswitch[m].On == 0) count++;
+    }
+    if(count < mswitchSize){ RMTuse = 0; } //This prevents the S0 / remote prof12 profile from constantly overriding any profile loaded with the remote when all consoles are off.
+                                          
+    if(S0 && !RMTuse && SRS == 0 && (count == mswitchSize) && currentProf != -12){ sendRBP(12); } // send S0 or "remote prof12" when all consoles are off
+    else if(S0 && !RMTuse && SRS == 1 && (count == mswitchSize) && currentProf != 0){ sendSVS(0); }
+
+  } // end of else if prof == 0
+} // end of sendProfile()
 
 // --------------------- WEB UI FUNCTIONS --------------------- //
 
 void handleGetConsoles(){
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-
     for(int i=0;i<consolesSize;i++){
         JsonObject obj = arr.add<JsonObject>();
         obj["Desc"] = consoles[i].Desc;
@@ -414,7 +2303,8 @@ void handleGetConsoles(){
         obj["Enabled"] = consoles[i].Enabled;
     }
 
-    String out; serializeJson(doc,out);
+    String out; 
+    serializeJson(doc,out);
     server.send(200,"application/json",out);
 } // end of handleGetConsoles()
 
@@ -427,12 +2317,14 @@ void handleGetGameDB(){
         item.add(gameDB[i][1]);
         item.add(gameDB[i][2]);
     }
-    String out; serializeJson(doc,out);
+    String out; 
+    serializeJson(doc,out);
     server.send(200,"application/json",out);
 } // end of handleGetGameDB()
 
 void saveGameDB(){
   File f = LittleFS.open("/gameDB.json", FILE_WRITE);
+
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
 
@@ -520,12 +2412,10 @@ void handleUpdateConsoles(){
     return;
   }
 
-  JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
-
+  JsonDocument doc; deserializeJson(doc, server.arg("plain"));
   JsonArray arr = doc.as<JsonArray>();
 
-  int newSize = 0; // Update consoles array in RAM
+  int newSize = 0;   // Update consoles array in RAM
   for(JsonObject obj : arr){
     consoles[newSize].Desc        = obj["Desc"].as<String>();
     consoles[newSize].Address     = obj["Address"].as<String>();
@@ -535,22 +2425,42 @@ void handleUpdateConsoles(){
   }
   consolesSize = newSize;
 
-  saveConsoles(); // save to LittleFS
+  saveConsoles();  // save to SPIFFS
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 } // end of handleUpdateConsoles()
 
-String embedS0Vars(){
+String embedVars(){
   JsonDocument doc;
   doc["S0_gameID"] = S0_gameID;
   doc["S0"] = S0;
+  doc["SRS"] = SRS;
+  doc["offset"] = offset;
+  doc["RT5Xir"] = RT5Xir;
+  doc["OSSCir"] = OSSCir;
+  doc["MTVir"] = MTVir;
+  doc["TESmartir"] = TESmartir;
+  doc["ExtronVideoOutputPortSW1"] = ExtronVideoOutputPortSW1;
+  doc["ExtronVideoOutputPortSW2"] = ExtronVideoOutputPortSW2;
+  doc["automatrixSW1"] = automatrixSW1;
+  doc["automatrixSW2"] = automatrixSW2;
+
+  JsonArray arr = doc["auxprof"].to<JsonArray>();
+  for(int i=0;i < 12;i++){
+    arr.add(auxprof[i]);
+  }
+
+  JsonArray arr2 = doc["vinMatrix"].to<JsonArray>();
+  for(int j=0;j < 65;j++){
+    arr2.add(vinMatrix[j]);
+  }
 
   String json;
   serializeJson(doc, json);
 
-  return "let S0Vars = " + json + ";";
-} // end of embedS0Vars()
+  return "let Vars = " + json + ";";
+} // end of embedVars()
 
-void handleUpdateS0Vars(){
+void handleUpdateVars(){
   if(!server.hasArg("plain")){
     server.send(400, "text/plain", "No body");
     return;
@@ -560,44 +2470,119 @@ void handleUpdateS0Vars(){
 
   S0_gameID = doc["S0_gameID"].as<bool>();
   S0 = doc["S0"].as<bool>();
+  SRS = doc["SRS"].as<uint8_t>();
+  offset = doc["offset"].as<uint16_t>();
+  RT5Xir = doc["RT5Xir"].as<uint8_t>();
+  OSSCir = doc["OSSCir"].as<uint8_t>();
+  MTVir = doc["MTVir"].as<uint8_t>();
+  TESmartir = doc["TESmartir"].as<uint8_t>();
+  ExtronVideoOutputPortSW1 = doc["ExtronVideoOutputPortSW1"].as<uint8_t>();
+  ExtronVideoOutputPortSW2 = doc["ExtronVideoOutputPortSW2"].as<uint8_t>();
+  automatrixSW1 = doc["automatrixSW1"].as<bool>();
+  automatrixSW2 = doc["automatrixSW2"].as<bool>();
 
-  saveS0Vars();
+  for(int i=0;i < 12;i++){
+    auxprof[i] = doc["auxprof"][i].as<uint8_t>();
+  }
+  for(int j=0;j < 65;j++){
+    vinMatrix[j] = doc["vinMatrix"][j].as<uint8_t>();
+  }
+
+  saveVars();
   server.send(200, "text/plain", "OK");
-} // end of handleUpdateS0Vars()
+} // end of handleUpdateVars()
 
-void saveS0Vars(){
+void saveVars(){
   JsonDocument doc;
 
   doc["S0_gameID"] = S0_gameID;
   doc["S0"] = S0;
+  doc["SRS"] = SRS;
+  doc["offset"] = offset;
+  doc["RT5Xir"] = RT5Xir;
+  doc["OSSCir"] = OSSCir;
+  doc["MTVir"] = MTVir;
+  doc["TESmartir"] = TESmartir;
+  doc["ExtronVideoOutputPortSW1"] = ExtronVideoOutputPortSW1;
+  doc["ExtronVideoOutputPortSW2"] = ExtronVideoOutputPortSW2;
+  doc["automatrixSW1"] = automatrixSW1;
+  doc["automatrixSW2"] = automatrixSW2;
 
-  File f = LittleFS.open("/s0vars.json", FILE_WRITE);
+  JsonArray aux = doc["auxprof"].to<JsonArray>();
+  for(int i=0;i < 12;i++) {
+    aux.add(auxprof[i]);
+  }
+  JsonArray vin = doc["vinMatrix"].to<JsonArray>();
+  for(int j=0;j < 65;j++){
+    vin.add(vinMatrix[j]);
+  }
+
+  File f = LittleFS.open("/settings.json", FILE_WRITE);
 
   serializeJson(doc, f);
   f.close();
-} // end of saveS0Vars()
+} // end of saveVars()
 
-void loadS0Vars(){
-  if (!LittleFS.exists("/s0vars.json")) return; // if file does not exist yet, load from .ino
-  File f = LittleFS.open("/s0vars.json", FILE_READ);
+void loadVars(){
+  if (!LittleFS.exists("/settings.json")) return; // if file does not exist yet, load from .ino
+  File f = LittleFS.open("/settings.json", FILE_READ);
 
   JsonDocument doc; deserializeJson(doc, f);
   f.close();
 
   S0_gameID = doc["S0_gameID"].as<bool>();
   S0 = doc["S0"].as<bool>();
-} // end of loadS0Vars()
+  SRS = doc["SRS"].as<uint8_t>();
+  offset = doc["offset"].as<uint16_t>();
+  RT5Xir = doc["RT5Xir"].as<uint8_t>();
+  OSSCir = doc["OSSCir"].as<uint8_t>();
+  MTVir = doc["MTVir"].as<uint8_t>();
+  TESmartir = doc["TESmartir"].as<uint8_t>();
+  ExtronVideoOutputPortSW1 = doc["ExtronVideoOutputPortSW1"].as<uint8_t>();
+  ExtronVideoOutputPortSW2 = doc["ExtronVideoOutputPortSW2"].as<uint8_t>();
+  automatrixSW1 = doc["automatrixSW1"].as<bool>();
+  automatrixSW2 = doc["automatrixSW2"].as<bool>();
 
-void handleGetS0Vars(){
+  JsonArray arr = doc["auxprof"];
+  for(int i=0;i < 12;i++) {
+    auxprof[i] = arr[i];
+  }
+  JsonArray arr2 = doc["vinMatrix"];
+  for(int j=0;j < 65;j++){
+    vinMatrix[j] = arr2[j];
+  }
+
+} // end of loadVars()
+
+void handleGetVars(){
   JsonDocument doc;
 
   doc["S0_gameID"] = S0_gameID;
   doc["S0"] = S0;
+  doc["SRS"] = SRS;
+  doc["offset"] = offset;
+  doc["RT5Xir"] = RT5Xir;
+  doc["OSSCir"] = OSSCir;
+  doc["MTVir"] = MTVir;
+  doc["TESmartir"] = TESmartir;
+  doc["ExtronVideoOutputPortSW1"] = ExtronVideoOutputPortSW1;
+  doc["ExtronVideoOutputPortSW2"] = ExtronVideoOutputPortSW2;
+  doc["automatrixSW1"] = automatrixSW1;
+  doc["automatrixSW2"] = automatrixSW2;
+
+  JsonArray aux = doc["auxprof"].to<JsonArray>();
+  for(int i = 0;i < 12;i++){
+    aux.add(auxprof[i]);
+  }
+  JsonArray vin = doc["vinMatrix"].to<JsonArray>();
+  for(int j=0;j < 65;j++){
+    vin.add(vinMatrix[j]);
+  }
 
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
-} // end of handleGetS0Vars()
+} // end of handleGetVars()
 
 void loadConsoles(){
   if(!LittleFS.exists("/consoles.json")) return; // if file does not exist yet, load from .ino
@@ -622,18 +2607,23 @@ void handleGetPayload(){
 } // end of handleGetPayload()
 
 void handleImportAll() {
-  if (!server.hasArg("plain")) {
+  if(!server.hasArg("plain")){
     server.send(400, "application/json", "{\"error\":\"No data\"}");
     return;
   }
 
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
+  DeserializationError err = deserializeJson(doc, server.arg("plain"));
+  if(err){
+    server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+    return;
+  }
 
-  // Restore consoles
-  JsonArray consolesArr = doc["consoles"].as<JsonArray>();
+  // ---------------- Restore consoles ----------------
+  JsonArray consolesArr = doc["consoles"];
   consolesSize = 0;
-  for (JsonObject o : consolesArr) {
+  for(JsonObject o : consolesArr){
+    if (consolesSize > MAX_CONSOLES) break;
     consoles[consolesSize].Desc = o["Desc"].as<String>();
     consoles[consolesSize].Address = o["Address"].as<String>();
     consoles[consolesSize].DefaultProf = o["DefaultProf"].as<int>();
@@ -642,10 +2632,11 @@ void handleImportAll() {
   }
   saveConsoles();
 
-  // Restore gameDB
-  JsonArray gameArr = doc["gameDB"].as<JsonArray>();
+  // ---------------- Restore gameDB ----------------
+  JsonArray gameArr = doc["gameDB"];
   gameDBSize = 0;
-  for (JsonArray item : gameArr) {
+  for(JsonArray item : gameArr){
+    if (gameDBSize > MAX_GAMEDB) break;
     gameDB[gameDBSize][0] = item[0].as<String>();
     gameDB[gameDBSize][1] = item[1].as<String>();
     gameDB[gameDBSize][2] = item[2].as<String>();
@@ -653,12 +2644,46 @@ void handleImportAll() {
   }
   saveGameDB();
 
+  // ---------------- Restore Settings ----------------
+  if(doc["settings"].is<JsonObject>()){
+    JsonObject settings = doc["settings"];
+
+    S0 = settings["S0"] | false;
+    S0_gameID = settings["S0_gameID"] | false;
+    SRS = settings["SRS"] | 0;
+    offset = settings["offset"] | 0;
+    RT5Xir = settings["RT5Xir"] | 0;
+    OSSCir = settings["OSSCir"] | 0;
+    MTVir = settings["MTVir"] | 0;
+    TESmartir = settings["TESmartir"] | 0;
+    ExtronVideoOutputPortSW1 = settings["ExtronVideoOutputPortSW1"] | 0;
+    ExtronVideoOutputPortSW2 = settings["ExtronVideoOutputPortSW2"] | 0;
+    automatrixSW1 = settings["automatrixSW1"] | 0;
+    automatrixSW2 = settings["automatrixSW2"] | 0;
+
+    if(settings["auxprof"].is<JsonArray>()){
+      JsonArray aux = settings["auxprof"];
+      for (int i = 0; i < 12; i++) {
+        auxprof[i] = aux[i] | 0;
+      }
+    }
+    if(settings["vinMatrix"].is<JsonArray>()){
+      JsonArray vin = settings["vinMatrix"];
+      for (int j = 0; j < 65; j++) {
+        vinMatrix[j] = vin[j] | 1;
+      }
+    }
+
+    saveVars();
+  }
+
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 } // end of handleImportAll()
 
-void handleExportAll() {
+void handleExportAll(){
   JsonDocument doc;
 
+  // ---------------- Consoles ----------------
   JsonArray consolesArr = doc["consoles"].to<JsonArray>();
   for (int i = 0; i < consolesSize; i++) {
     JsonObject o = consolesArr.add<JsonObject>();
@@ -668,22 +2693,94 @@ void handleExportAll() {
     o["Enabled"] = consoles[i].Enabled;
   }
 
+  // ---------------- gameDB ----------------
   JsonArray gameArr = doc["gameDB"].to<JsonArray>();
-  for (int i = 0; i < gameDBSize; i++) {
+  for(int i=0;i < gameDBSize;i++) {
     JsonArray item = gameArr.add<JsonArray>();
     item.add(gameDB[i][0]);
     item.add(gameDB[i][1]);
     item.add(gameDB[i][2]);
   }
 
+  // ---------------- Settings ----------------
+  JsonObject settings = doc["settings"].to<JsonObject>();
+
+  settings["S0"] = S0;
+  settings["S0_gameID"] = S0_gameID;
+  settings["SRS"] = SRS;
+  settings["offset"] = offset;
+  settings["RT5Xir"] = RT5Xir;
+  settings["OSSCir"] = OSSCir;
+  settings["MTVir"] = MTVir;
+  settings["TESmartir"] = TESmartir;
+  settings["ExtronVideoOutputPortSW1"] = ExtronVideoOutputPortSW1;
+  settings["ExtronVideoOutputPortSW2"] = ExtronVideoOutputPortSW2;
+  settings["automatrixSW1"] = automatrixSW1;
+  settings["automatrixSW2"] = automatrixSW2;
+
+  JsonArray aux = settings["auxprof"].to<JsonArray>();
+  for(int i=0;i < 12;i++) {
+    aux.add(auxprof[i]);
+  }
+  JsonArray vin = settings["vinMatrix"].to<JsonArray>();
+  for(int j=0;j < 65;j++) {
+    vin.add(vinMatrix[j]);
+  } // end of handleExportAll
+
+  // ---------------- Send file ----------------
   String out;
   serializeJsonPretty(doc, out);
   server.sendHeader("Content-Disposition", "attachment; filename=donutshop_config.json");
   server.send(200, "application/json", out);
 } // end of handleExportAll()
 
+void handleUpdate() {
+  server.sendHeader("Connection", "close");
 
-void handleRoot() {
+  if (Update.hasError()) {
+    server.send(500, "text/plain", "Update Failed!");
+  } else {
+    server.send(200, "text/plain", "Update Success! Rebooting...");
+  }
+
+  delay(100);
+  ESP.restart();
+} // end of handleUpdate()
+
+void handleUpdateUpload() {
+  HTTPUpload& upload = server.upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    Serial.printf("Update Start: %s\n", upload.filename.c_str());
+
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      Update.printError(Serial);
+    }
+
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(Serial);
+    }
+
+  } else if (upload.status == UPLOAD_FILE_END) {
+
+    if (Update.end(true)) {
+      Serial.printf("Update Success: %u bytes\n", upload.totalSize);
+    } else {
+      Update.printError(Serial);
+    }
+  }
+} // end of handleUpdateUpload()
+
+
+void handleRoot(){
+  String fwVer = String(FIRMWARE_VERSION);
+  #ifdef FW_TYPE
+  String fwType = String(FW_TYPE);
+  #else
+  String fwType = "";
+  #endif
   String page = R"rawliteral(
   <!DOCTYPE html>
   <html>
@@ -698,15 +2795,18 @@ void handleRoot() {
       input { width: 95%; }
       button { margin: 2px; }
       h2, h3 { text-align: center; }
+
       #consoleTable td:first-child {
         text-align: center;
         width: 90px;
       }
+
       #consoleTable td:last-child,
       #profileTable td:last-child {
         width: 90px;
         text-align: center;
       }
+
       #profileTable input {
         display: block;
         margin: 0 auto;
@@ -716,34 +2816,6 @@ void handleRoot() {
 
       .controls { text-align: center; }
       .arrow { font-size: 0.8em; margin-left: 4px; color: #555; }
-      .s0-row td {
-        background-color: white;
-        border: 1px solid #999;
-      }
-      .s0-row td:first-child {
-        background-color: #eee;
-        font-weight: bold;
-      }
-      .s0-cell {
-        background-color: #eee;
-        border: 1px solid #999;
-        font-weight: normal;
-        text-align: center;
-        vertical-align: middle;
-        padding: 6px;
-      }
-
-      .topbar {
-        position: fixed;
-        top: 0;
-        right: 0;
-        padding: 8px;
-      }
-      button {
-        margin-left: 4px;
-      }
-
-      /* ---------- TOOLTIP SYSTEM ---------- */
       .tooltip {
         position: relative;
         display: inline-flex;
@@ -776,7 +2848,6 @@ void handleRoot() {
         pointer-events: none;
       }
 
-      /* show on hover + keyboard focus */
       .tooltip:hover .tooltip-bubble,
       .tooltip:focus-within .tooltip-bubble {
         opacity: 1;
@@ -784,7 +2855,6 @@ void handleRoot() {
         transform: translate(-50%, -8px);
       }
 
-      /* arrow */
       .tooltip .tooltip-bubble::after {
         content: "";
         position: absolute;
@@ -796,6 +2866,48 @@ void handleRoot() {
         border-color: #2f2f2f transparent transparent transparent;
       }
 
+      #settingsPage .tooltip {
+        position: relative;
+      }
+
+      #settingsPage .tooltip .tooltip-bubble {
+        width: auto;
+        max-width: none;
+        white-space: nowrap;
+        text-align: left;
+        line-height: 1.4;
+        padding: 10px 14px;
+        display: inline-block;
+        position: absolute;
+        left: 0;
+        margin-left: 2px;
+        transform: none;
+        visibility: hidden;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out;
+        background-color: black;
+        color: #fff;
+        border-radius: 5px;
+      }
+
+      /* Triangle pointer positioned at the bottom left */
+      #settingsPage .tooltip .tooltip-bubble::after {
+        content: '';
+        position: absolute;
+        bottom: -5px; /* Position the triangle slightly below the bubble */
+        left: 10px; /* Align the triangle to the left side of the bubble */
+        border-width: 5px;
+        border-style: solid;
+        border-color: black transparent transparent transparent; /* Black triangle */
+      }
+
+      /* Show tooltip on hover */
+      #settingsPage .tooltip:hover .tooltip-bubble {
+        visibility: visible;
+        opacity: 1;
+      }
+
+
       .status-icon {
         display: inline-block;
         width: 10px;
@@ -803,6 +2915,7 @@ void handleRoot() {
         border-radius: 50%;
         margin-right: 6px;
       }
+
       .leader-icon {
         display: inline-block;
         width: 9px;
@@ -811,18 +2924,31 @@ void handleRoot() {
         margin-right: 6px;
         transform: rotate(45deg);
       }
+
       .leader-icon.on { background-color: #4CAF50; }
       .status-icon.on { background-color: #4CAF50; }
       .status-icon.off { background-color: red; }
       .profile-match td {
         background-color: #4CAF50;
       }
+
       .profile-match td input {
         -webkit-appearance: none;
         appearance: none;
       }
+
       .console-prof-cell-match {
         background-color: #4CAF50;
+      }
+
+      .topbar {
+        position: fixed;
+        top: 0;
+        right: 0;
+        padding: 8px;
+      }
+      button {
+        margin-left: 4px;
       }
 
       .switch {
@@ -832,11 +2958,13 @@ void handleRoot() {
         height: 22px;
         vertical-align: middle;
       }
+
       .switch input {
         opacity: 0;
         width: 0;
         height: 0;
       }
+
       .slider {
         position: absolute;
         cursor: pointer;
@@ -845,6 +2973,7 @@ void handleRoot() {
         transition: 0.25s;
         border-radius: 22px;
       }
+
       .slider:before {
         position: absolute;
         content: "";
@@ -856,12 +2985,15 @@ void handleRoot() {
         transition: 0.25s;
         border-radius: 50%;
       }
+
       .switch input:checked + .slider {
         background-color: #4CAF50;
       }
+
       .switch input:checked + .slider:before {
         transform: translateX(20px);
       }
+
       .topbar .tooltip .tooltip-bubble {
         position: absolute;
         bottom: -32px;
@@ -872,6 +3004,7 @@ void handleRoot() {
         z-index: 50;
         min-width: 20px;
       }
+
       .topbar .tooltip .tooltip-bubble::after {
         content: "";
         position: absolute;
@@ -882,9 +3015,63 @@ void handleRoot() {
         border-style: solid;
         border-color: transparent transparent #2f2f2f transparent;
       }
+
       .topbar .tooltip {
         cursor: default;
         position: relative;
+      }
+
+      .settings-section {
+        margin-bottom: 35px;
+      }
+
+      .settings-title {
+        text-align: left;
+        font-size: 1.4em;
+        font-weight: 600;
+        margin-bottom: 8px;
+        padding-bottom: 6px;
+        border-bottom: 2px solid #ddd;
+      }
+
+      .settings-content {
+        padding-top: 10px;
+      }
+
+      .setting-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+
+      .setting-row label:first-child {
+        font-weight: 500;
+      }
+
+      .setting-row input[type="number"] {
+        width: 120px;
+        padding: 4px;
+      }
+
+      .button-wrapper {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .button-number {
+        width: 36px;
+        height: 22px;
+        background: #e0e0e0;
+        color: #333;
+        font-size: 0.8em;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        margin-bottom: 4px;
       }
 
       .consoles-header {
@@ -941,32 +3128,97 @@ void handleRoot() {
         transform: translateY(-50%);
       }
 
+      .settings-section.firmware-section {
+        margin-top: 48px;
+      }
+
+      .settings-section.firmware-section input[type="file"] {
+        margin-top: 8px;
+        margin-bottom: 12px;
+        width: auto;
+      }
+
+      .settings-section.firmware-section button,
+      .settings-section.firmware-section input[type="submit"] {
+        width: auto;
+        display: inline-block;
+        padding: 8px 16px;
+        font-size: 1rem;
+      }
+
+      .fw-upload-row {
+        display: flex;
+        align-items: center;
+        margin-top: 6px;
+        gap: 12px;
+      }
+
+      #fwUploadBtn {
+        display: none;
+        height: 36px;
+        padding: 0 14px;
+        font-size: 1rem;
+        line-height: 36px;
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background-color 0.2s ease;
+        margin: 0;
+      }
+
+      #fwUploadBtn:hover {
+        background-color: #45a049;
+      }
+
+      #fwStatus {
+        font-size: 0.95rem;
+        white-space: nowrap;
+      }
+
+
+
     </style>
   </head>
-  <body>
 
-  <div class="topbar" style="display:flex; justify-content:flex-end; gap:2px; background:white; padding:8px;">
-    <input type="file" id="importJson" style="display:none" accept=".json" onchange="importData(event)">
-    <button onclick="document.getElementById('importJson').click()">
-      <span class="tooltip">📂<span class="tooltip-bubble">Import Config</span>
+  <body>
+  <div class="topbar" style="display:flex; justify-content:flex-end; gap:6px; background:white; padding:8px;">
+    <div id="mainTopbarButtons" style="display:flex; gap:6px;">
+      <input type="file" id="importJson" style="display:none" accept=".json" onchange="importData(event)">
+      <button onclick="document.getElementById('importJson').click()">
+        <span class="tooltip">📂
+          <span class="tooltip-bubble">Import Config</span>
+        </span>
+      </button>
+      <button onclick="exportData()">
+        <span class="tooltip">💾
+          <span class="tooltip-bubble">Export Config</span>
+        </span>
+      </button>
+    </div>
+
+    <!-- SETTINGS / BACK BUTTON -->
+    <button id="navBtn" onclick="togglePage()">
+      <span class="tooltip" id="navTooltip">
+        ⚙️
+        <span class="tooltip-bubble" id="navTooltipText">Settings</span>
       </span>
     </button>
-    <button onclick="exportData()">
-      <span class="tooltip">💾<span class="tooltip-bubble">Export Config</span>
-      </span>
-    </button>
+
   </div>
 
+  <div id="mainPage">
   <center><h1>Donut Shop</h1></center>
   <div class="controls">
   </div>
 
-    <div class="consoles-header">
-      <h2>Consoles</h2>
+  <div class="consoles-header">
+    <h2>Consoles</h2>
 
-      <span class="tooltip add-console-wrapper">
-        <button class="add-console-btn" onclick="addConsole()">+</button>
-        <span class="tooltip-bubble">Add Console</span>
+    <span class="tooltip add-console-wrapper">
+      <button class="add-console-btn" onclick="addConsole()">+</button>
+      <span class="tooltip-bubble">Add Console</span>
     </span>
   </div>
 
@@ -977,8 +3229,8 @@ void handleRoot() {
           <span class="tooltip" tabindex="0">
             Enabled
             <span class="tooltip-bubble">
-            gameID is checked by looping through "Enabled" Consoles. 
-            There is a 2 second pause after each loop.
+            gameID is checked by cycling through "Enabled" Consoles. 
+            There is a 2 second pause after each cycle.
             </span>
           </span>
         </th>
@@ -1006,10 +3258,10 @@ void handleRoot() {
             </span>
           </span>
           <label class="switch" style="margin-left:5px;">
-                 <input type="checkbox"
-                 id="S0_gameID"
-                 onchange="updateS0GameID(this)">
-                 <span class="slider"></span>
+            <input type="checkbox"
+                  id="S0_gameID"
+                  onchange="updateS0GameID(this)">
+            <span class="slider"></span>
           </label>
         </th>
         <th>Action</th>
@@ -1027,6 +3279,7 @@ void handleRoot() {
       </span>
     </span>
   </div>
+
   <table id="profileTable">
     <thead>
       <tr>
@@ -1049,11 +3302,297 @@ void handleRoot() {
           </span>
           <span class="arrow" id="arrow2">▲▼</span>
         </th>
+
         <th>Action</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
+  </div>
+
+        <div id="settingsPage" style="display:none; padding-top:60px;">
+        <div style="width:80%; margin:20px auto;">
+          <div class="settings-section" id="profileRulesSection">
+            <h2 class="settings-title">Profile Rules</h2>
+            <div class="settings-content">
+
+              <!-- S0 Toggle -->
+              <div class="setting-row" id="S0_row">
+                <span class="tooltip">
+                  <span id="S0_label">
+                    Load S0 profile when ALL Consoles are powered OFF
+                  </span>
+                  <span class="tooltip-bubble">Automatically load S0 profile if every console is OFF.</span>
+                </span>
+                <label class="switch">
+                  <input type="checkbox" id="S0_toggle">
+                  <span class="slider"></span>
+                </label>
+              </div>
+
+              <!-- SRS -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  Switch Rule Set
+                  <span class="tooltip-bubble">
+                  Use "Remote Button Profiles" 1-12 for up to 12 inputs on 1st Port Switch<br>
+                  SVS 13 - 99 for everything over 12.<br>
+                  Only SVS profiles are used on 2nd Port Switch, if connected.<br>
+                  </span>
+                </span>
+                <select id="SRS_select">
+                  <option value="0">Remote Button Profiles + SVS Profiles</option>
+                  <option value="1">SVS Profiles Only</option>
+                </select>
+              </div>
+
+              <!-- Switch Offset -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  Switch Offset
+                  <span class="tooltip-bubble">
+                  Numeric offset applied to Switch profile selection so not to conflict<br>
+                  with multiple Donut Dongles or the Scalable Video Switch.<br>
+                  Ex: Input3 with Offset of 10 = Profile 13<br><br>
+                  Does not apply to gameDB entries.<br>
+                  </span>
+                </span>
+                <input type="number" id="offset_input" min="0" max="1000" placeholder="0">
+              </div>
+
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h2 class="settings-title">IR Emitter Options</h2>
+            <div class="settings-content">
+
+              <!-- RT5X IR -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  RT5X (changes Profiles 1-10)
+                  <span class="tooltip-bubble">
+                  IR emitter controls RT5X profiles 1–10<br>
+                  (IR Emitter must be connected)<br>
+                  </span>
+                </span>
+                <select id="RT5Xir_input">
+                  <option value="0">Disabled</option>
+                  <option value="1">Switch on Port1</option>
+                  <option value="3">Switch on Port2</option>
+                  <option value="4">Experimental</option>
+                </select>
+              </div>
+
+              <!-- OSSC IR -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  OSSC (changes Profiles 1-14)
+                  <span class="tooltip-bubble">
+                  IR emitter controls OSSC profiles 1-14<br>
+                  (IR Emitter must be connected)<br>
+                  </span>
+                </span>
+                <select id="OSSCir_input">
+                  <option value="0">Disabled</option>
+                  <option value="1">Switch on Port1</option>
+                </select>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h2 class="settings-title">IR Receiver Options</h2>
+            <div class="settings-content">
+
+              <!-- MT-ViKi -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  MT-VIKI (AUX8 + Profile Button changes Input over Serial)
+                  <span class="tooltip-bubble">
+                  AUX8 + Profile button for SVS Profiles 1-8<br>
+                  (IR Receiver must be connected)<br>
+                  </span>
+                </span>
+                <select id="MTVir_input">
+                  <option value="0">Disabled</option>
+                  <option value="1">Connected on Port1</option>
+                  <option value="2">Connected on Port2</option>
+                </select>
+              </div>
+
+              <!-- TESmart -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  TESmart (AUX7 or AUX8 + Profile Button changes Input over Serial)
+                  <span class="tooltip-bubble">
+                  AUX7 / AUX8 + Profile button for SVS Profiles 1-12<br>
+                  AUX7 / AUX8 + AUX1 - AUX4 for SVS Profiles 13-16<br>
+                  (IR Receiver must be connected)<br>
+                  </span>
+                </span>
+                <select id="TESmartir_input">
+                  <option value="0">Disabled</option>
+                  <option value="1">Connected on Port1 / AUX7 + Profile Button</option>
+                  <option value="2">Connected on Port2 / AUX8 + Profile Button</option>
+                  <option value="3">Connected on Port1 & 2 / AUX7 or AUX8 + Profile Button</option>
+                </select>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- EXTRA REMOTE BUTTON PROFILES -->
+          <div class="settings-section">
+            <h2 class="settings-title">Extra Remote Button Profiles</h2>
+
+            <div class="settings-content">
+              <div class="setting-row">
+                <span class="tooltip" style="text-align: center; font-weight: normal; font-size: 1rem; margin-bottom: 5px;">
+                  Assign SVS Profiles to AUX8 + Remote Buttons 1-12
+                  <span class="tooltip-bubble">
+                    Press AUX8 then a remote # button to load the assigned SVS profile.<br>
+                    (IR Receiver must be connected)<br><br>
+
+                    ** IR Receiver options above take priority over AUX8 if used **<br>
+                  </span>
+                </span>
+              </div>
+
+              <!-- 12 Profile Inputs with labels -->
+              <div style="width:25%; margin-left:auto; margin-right:0;">
+                <div id="auxprofInputs" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-top:2px;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- EXTRON MATRIX -->
+          <div class="settings-section">
+            <h2 class="settings-title">Extron Matrix</h2>
+            <div class="settings-content">
+                
+              <!-- SW1 Video Output Port -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  <label for="ExtronVideoOutputPortSW1_input">Video Output Port for SW1</label>
+                  <span class="tooltip-bubble">
+                    For certain Extron Matrix models, must specify the video output port that connects to RT4K.
+                  </span>
+                </span>
+                <input type="number" id="ExtronVideoOutputPortSW1_input" min="1" max="32" value="1" style="width:50px;">
+              </div>
+
+              <!-- SW2 Video Output Port -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  <label for="ExtronVideoOutputPortSW2_input">Video Output Port for SW2</label>
+                  <span class="tooltip-bubble">
+                    For certain Extron Matrix models, must specify the video output port that connects to RT4K
+                  </span>
+                </span>
+                <input type="number" id="ExtronVideoOutputPortSW2_input" min="1" max="32" value="1" style="width:50px;">
+              </div>
+
+              <!-- Auto Matrix SW1 -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  <label for="automatrixSW1_toggle">Auto Matrix SW1</label>
+                  <span class="tooltip-bubble">
+                    Enable for Auto Matrix switching on "SW1" port.<br><br>
+                    **Extron Matrix switch MUST support DSVP.**<br>
+                  </span>
+                </span>
+                <label class="switch">
+                  <input type="checkbox" id="automatrixSW1_toggle">
+                  <span class="slider"></span>
+                </label>
+              </div>
+
+              <!-- Auto Matrix SW2 -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  <label for="automatrixSW2_toggle">Auto Matrix SW2</label>
+                  <span class="tooltip-bubble">
+                    Enable for Auto Matrix switching on "SW2" port.<br><br>
+                    **Extron Matrix switch MUST support DSVP.**<br>
+                  </span>
+                </span>
+                <label class="switch">
+                  <input type="checkbox" id="automatrixSW2_toggle">
+                  <span class="slider"></span>
+                </label>
+              </div>
+
+              <!-- Auto Matrix Mode -->
+              <div class="setting-row">
+                <span class="tooltip">
+                  <label for="vinMatrixMode_select">Auto Matrix Mode</label>
+                  <span class="tooltip-bubble">
+                   Auto switches inputs based on signal detection.<br>
+                   Choose what you want to do with the Input.<br><br>
+                   **Extron Matrix switch MUST support DSVP.**<br>
+                  </span>
+                </span>
+                <select id="vinMatrixMode_select">
+                  <option value="0">Tie to ALL Outputs</option>
+                  <option value="1">Trigger Preset</option>
+                  <option value="2">Tie to Video Output Port for SW1 / SW2</option>
+                </select>
+              </div>
+
+              <!-- SW1 Presets Grid -->
+              <div class="setting-row" id="SW1PresetsContainer">
+              <span class="tooltip">
+                <span class="grid-title tooltip">
+                  [Auto Matrix SW1] Input to Preset mapping:
+                  <span class="tooltip-bubble">
+                    Choose what # Preset gets loaded for each Input.<br><br>
+                    This will also load the same valued SVS profile + offset.<br>
+                  </span>
+                </span>
+              </span>
+              <div id="SW1PresetsGrid" style="display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px;">
+                <!-- Inputs go here -->
+              </div>
+            </div>
+
+            <!-- SW2 Presets Grid -->
+            <div class="setting-row" id="SW2PresetsContainer">
+                <span class="tooltip">
+                    <span class="grid-title tooltip">
+                      [Auto Matrix SW2] Input to Preset mapping:
+                      <span class="tooltip-bubble">
+                        Choose what # Preset gets loaded for each Input.<br><br>
+                        This will also load the same valued SVS profile + 100 + offset.<br>
+                      </span>
+                    </span>
+                </span>
+                <div id="SW2PresetsGrid" style="display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px;">
+                    <!-- Inputs go here -->
+                </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section firmware-section" id="firmwareSection">
+          <h2 class="settings-title">Firmware Update</h2>
+          Current Version: )rawliteral" + fwVer + R"rawliteral(
+          <form id="fwForm" class="fw-form">
+            <input type="file" id="fwFile" name="update" accept=".bin">
+            <div class="fw-upload-row">
+              <button type="submit" id="fwUploadBtn" class="fw-button">Upload Firmware</button>
+              <span id="fwStatus"></span>
+            </div>
+          </form>
+        </div>
+
+
+
+
+      </div>
+    </div>
+
 
   <script>
   let refreshInterval = null;
@@ -1063,12 +3602,88 @@ void handleRoot() {
   let gameProfiles = [];
   let currentSortCol = null;
   let currentSortDir = 'asc';
+  let currentPage = "main";
 
+  const fwType = ")rawliteral" + fwType + R"rawliteral(";
+  const urlParams = new URLSearchParams(window.location.search);
+
+  function togglePage() {
+    const main = document.getElementById("mainPage");
+    const settings = document.getElementById("settingsPage");
+    const iconSpan = document.getElementById("navTooltip");
+    const tooltipText = document.getElementById("navTooltipText");
+    const mainButtons = document.getElementById("mainTopbarButtons");
+
+    if (currentPage === "main") {
+      // Hide main page
+      main.style.display = "none";
+      mainButtons.style.display = "none";
+      settings.style.display = "block";
+      iconSpan.firstChild.nodeValue = "⬅ ";
+      tooltipText.textContent = "Back";
+      currentPage = "settings";
+
+      // If FW_TYPE == "C", load Quick Settings
+      if (typeof fwType !== "undefined" && fwType === "C") {
+        showQuickSettings();
+      }
+    } else {
+      updateSettings();
+      main.style.display = "block";
+      mainButtons.style.display = "flex";
+      settings.style.display = "none";
+      iconSpan.firstChild.nodeValue = "⚙️ ";
+      tooltipText.textContent = "Settings";
+
+      currentPage = "main";
+    }
+  }
+
+
+  function showQuickSettings() {
+    document.getElementById("mainPage").style.display = "none";
+    document.getElementById("settingsPage").style.display = "block";
+    currentPage = "settings";
+
+    // Hide all settings sections
+    document.querySelectorAll(".settings-section").forEach(sec => sec.style.display = "none");
+
+    // Show Firmware section
+    const fw = document.getElementById("firmwareSection");
+    if (fw) fw.style.display = "block";
+
+    // Show Profile Rules container
+    const profile = document.getElementById("profileRulesSection");
+    if (profile) {
+      profile.style.display = "block";
+
+      // Hide all rows first
+      profile.querySelectorAll(".setting-row").forEach(row => row.style.display = "none");
+
+      // Force SRS variable to 1
+      Vars["SRS"] = 1;
+      saveVars();
+
+      // Show S0 row
+      const s0 = document.getElementById("S0_row");
+      if (s0) s0.style.display = "flex";
+
+      // Update S0 label text immediately
+      const s0Label = document.getElementById("S0_label");
+      if (s0Label) {
+        s0Label.textContent = "Load S0 profile when ALL Consoles are powered OFF";
+      }
+
+    }
+  }
+
+  // inject current Settings values
   )rawliteral";
 
-  page += embedS0Vars();
+  page += embedVars();
 
   page += R"rawliteral(
+
 
   // ---------------- LOAD DATA ----------------
   async function loadData(){
@@ -1081,13 +3696,168 @@ void handleRoot() {
     renderConsoles();
     consoles.forEach((c, i) => updateStatusIcon(i));
     renderProfiles();
+    loadSettings();
     updateArrows();
+
+    if (typeof Vars !== "undefined") {
+        loadSettings();
+    }
 
     // set initial state of S0_gameID checkbox
     const s0cb = document.getElementById('S0_gameID');
-    if (s0cb && S0Vars['S0_gameID'] !== undefined) {
-      s0cb.checked = S0Vars['S0_gameID'];
+    if (s0cb && Vars['S0_gameID'] !== undefined) {
+      s0cb.checked = Vars['S0_gameID'];
     }
+
+  }
+
+  function renderAuxProfInputs() {
+    const container = document.getElementById("auxprofInputs");
+    if (!container || !Vars || !Vars.auxprof) return;
+
+    container.innerHTML = "";
+
+    for (let i = 0; i < 12; i++) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "button-wrapper";
+
+      const numberBox = document.createElement("div");
+      numberBox.className = "button-number";
+      numberBox.textContent = i + 1;
+
+      const input = document.createElement("input");
+      input.type = "number"; 
+      input.min = "0";
+      input.max = "999";
+      input.id = "auxprof_" + i;
+      input.value = Vars.auxprof[i] ?? 0;
+      input.onchange = updateSettings;
+
+      wrapper.appendChild(numberBox);
+      wrapper.appendChild(input);
+      container.appendChild(wrapper);
+    }
+  }
+
+  // update S0 text
+  function updateS0Label() {
+    const label = document.getElementById("S0_label");
+    const srs = parseInt(document.getElementById("SRS_select")?.value, 10);
+
+    if (!label) return;
+
+    if (srs === 0) {
+      label.textContent = "Load Remote Button profile 12 when ALL Consoles are powered OFF";
+    } else {
+      label.textContent = "Load S0 profile when ALL Consoles are powered OFF";
+    }
+  }
+
+
+
+  function loadSettings() {
+
+    renderAuxProfInputs();
+    const s0Toggle = document.getElementById("S0_toggle");
+    const srsSelect = document.getElementById("SRS_select");
+    const offsetInput = document.getElementById("offset_input");
+    // IR Emitter
+    const rt5xInput = document.getElementById("RT5Xir_input");
+    const osscInput = document.getElementById("OSSCir_input");
+
+    // IR Receiver
+    const mtvInput = document.getElementById("MTVir_input");
+    const tesInput = document.getElementById("TESmartir_input");
+
+    //Extron Matrix
+    const evopsw1 = document.getElementById("ExtronVideoOutputPortSW1_input");
+    const evopsw2 = document.getElementById("ExtronVideoOutputPortSW2_input");
+    if(evopsw1){
+      evopsw1.value = Vars.ExtronVideoOutputPortSW1 ?? 0;
+      evopsw1.onchange = updateSettings;
+    }
+    if(evopsw2){
+      evopsw2.value = Vars.ExtronVideoOutputPortSW2 ?? 0;
+      evopsw2.onchange = updateSettings;
+    }
+
+    // Auto Matrix switches
+    const autoSW1 = document.getElementById("automatrixSW1_toggle");
+    const autoSW2 = document.getElementById("automatrixSW2_toggle");
+    const sw1cont = document.getElementById("SW1PresetsContainer");
+    const sw2cont = document.getElementById("SW2PresetsContainer");
+
+    if(autoSW1) autoSW1.checked = Boolean(Vars["automatrixSW1"]);
+
+    if(autoSW2) autoSW2.checked = Boolean(Vars["automatrixSW2"]);
+
+    // Load Auto Matrix Mode dropdown (index 0)
+    const vinModeSelect = document.getElementById("vinMatrixMode_select");
+    if (vinModeSelect) vinModeSelect.value = Vars.vinMatrix[0].toString();
+
+    // Load the SW1 inputs (1-32) into inputs
+    for (let i = 0; i < 32; i++) {
+        const inputEl = document.getElementById(`vinSW1_input${i + 1}`);
+        if (inputEl) {
+            inputEl.value = Vars.vinMatrix[1 + i]; // SW1 inputs
+            inputEl.onchange = updateSettings;
+        }
+    }
+
+    // Load the SW2 inputs (33-64) into inputs
+    for (let i = 0; i < 32; i++) {
+        const inputEl = document.getElementById(`vinSW2_input${i + 1}`);
+        if (inputEl) {
+            inputEl.value = Vars.vinMatrix[33 + i]; // SW2 inputs
+            inputEl.onchange = updateSettings;
+        }
+    }
+
+
+    // Load current values
+    if (rt5xInput) rt5xInput.value = Vars["RT5Xir"];
+    if (osscInput) osscInput.value = Vars["OSSCir"];
+    if (mtvInput) mtvInput.value = Vars["MTVir"];
+    if (tesInput) tesInput.value = Vars["TESmartir"];
+
+    // Save changes on select change
+    if (rt5xInput) rt5xInput.onchange = updateSettings;
+    if (osscInput) osscInput.onchange = updateSettings;
+    if (mtvInput) mtvInput.onchange = updateSettings;
+    if (tesInput) tesInput.onchange = updateSettings;
+
+    // auxprof[]
+    for (let i = 0; i < 12; i++) {
+      const input = document.getElementById("auxprof_" + i);
+      if (input && Vars.auxprof) {
+        input.value = Vars.auxprof[i];
+        input.onchange = updateSettings;
+      }
+    }
+
+    if (!s0Toggle) return;
+
+    offsetInput.value = Number(Vars["offset"] ?? 0);
+
+    s0Toggle.checked = Boolean(Vars["S0"]);
+    srsSelect.value = Vars["SRS"].toString();
+    updateS0Label();
+
+    // Event handlers
+    s0Toggle.onchange = updateSettings;
+    srsSelect.onchange = () => {
+      updateSettings();
+      updateS0Label();
+    };
+    offsetInput.onchange = updateSettings;
+
+    // Ensure blank offset becomes 0
+    offsetInput.onblur = () => {
+      if (offsetInput.value === "" || isNaN(offsetInput.value)) {
+        offsetInput.value = 0;
+        updateSettings();
+      }
+    };
   }
 
   // ---------------- CONSOLES ----------------
@@ -1098,30 +3868,39 @@ void handleRoot() {
     consoles.forEach((c, idx) => {
       const tr = document.createElement('tr');
 
-      // --- Enable checkbox column ---
+      // --- Enable switch column ---
       const tdEnable = document.createElement('td');
+
       const label = document.createElement('label');
       label.className = 'switch';
+
       const enableCheckbox = document.createElement('input');
       enableCheckbox.type = 'checkbox';
       enableCheckbox.checked = !!c.Enabled;
+      enableCheckbox.id = `console_enabled_${idx}`;
+      enableCheckbox.name = `console_enabled_${idx}`;
       enableCheckbox.onchange = async () => {
         consoles[idx].Enabled = enableCheckbox.checked;
-        await saveConsoles(); 
+        await saveConsoles();
       };
+
       const slider = document.createElement('span');
       slider.className = 'slider';
+
       label.appendChild(enableCheckbox);
       label.appendChild(slider);
       tdEnable.appendChild(label);
       tr.appendChild(tdEnable);
 
+
       // --- Description ---
       const tdDesc = document.createElement('td');
       const descInput = document.createElement('input');
-      descInput.type = 'text'; 
+      descInput.type = 'text';
       descInput.value = c.Desc;
-      descInput.onchange = async () => { 
+      descInput.id = `console_desc_${idx}`;
+      descInput.name = `console_desc_${idx}`;
+      descInput.onchange = async () => {
         consoles[idx].Desc = descInput.value;
         await saveConsoles();
       };
@@ -1131,12 +3910,14 @@ void handleRoot() {
       // --- Address ---
       const tdAddr = document.createElement('td');
       const addrInput = document.createElement('input');
-      addrInput.type = 'text'; 
+      addrInput.type = 'text';
       addrInput.value = c.Address;
+      addrInput.id = `console_addr_${idx}`;
+      addrInput.name = `console_addr_${idx}`;
       addrInput.style.width = '87%';
       addrInput.onchange = async () => {
-        consoles[idx].Address = addrInput.value;  
-        await saveConsoles();                    
+          consoles[idx].Address = addrInput.value;
+          await saveConsoles();
       };
       tdAddr.appendChild(addrInput);
       tr.appendChild(tdAddr); 
@@ -1145,8 +3926,10 @@ void handleRoot() {
       const tdProf = document.createElement('td');
       tdProf.classList.add('console-default-prof-cell');
       const profInput = document.createElement('input');
-      profInput.type = 'number'; 
+      profInput.type = 'number';
       profInput.value = c.DefaultProf;
+      profInput.id = `console_defaultprof_${idx}`;
+      profInput.name = `console_defaultprof_${idx}`;
       profInput.classList.add('console-default-prof');
       profInput.onchange = async () => {
         consoles[idx].DefaultProf = parseInt(profInput.value, 10) || 0; 
@@ -1157,73 +3940,21 @@ void handleRoot() {
         }
         await saveConsoles(); 
       };
-      tdProf.appendChild(profInput); 
+      tdProf.appendChild(profInput);
       tr.appendChild(tdProf);
 
       // --- Delete ---
       const tdDel = document.createElement('td');
-      const delBtn = document.createElement('button'); 
+      const delBtn = document.createElement('button');
       delBtn.textContent = 'Delete';
-      delBtn.onclick = () => deleteConsole(idx); 
-      tdDel.appendChild(delBtn); 
+      delBtn.onclick = () => deleteConsole(idx);
+      tdDel.appendChild(delBtn);
       tr.appendChild(tdDel);
-
       tbody.appendChild(tr);
     });
-
-    // --- S0 row ---
-    const trS0 = document.createElement('tr');
-    trS0.className = 's0-row';
-
-    // --- Enabled switch column ---
-    const tdEnableS0 = document.createElement('td');
-    tdEnableS0.classList.add('s0-cell');
-
-    // Add the power emoji text
-    const powerIcon = document.createElement('span');
-    powerIcon.textContent = "⏻";
-    powerIcon.style.marginRight = "6px";
-    tdEnableS0.appendChild(powerIcon);
-
-    // Tooltip wrapper for switch
-    const tooltip = document.createElement('span');
-    tooltip.className = 'tooltip';
-
-    const label = document.createElement('label');
-    label.className = 'switch';
-
-    const s0cb = document.createElement('input'); 
-    s0cb.type = 'checkbox';
-    s0cb.checked = !!S0Vars['S0'];
-    s0cb.onchange = async () => { 
-      S0Vars['S0'] = s0cb.checked; 
-      saveS0Vars(); 
-    };
-
-    const slider = document.createElement('span');
-    slider.className = 'slider';
-
-    label.appendChild(s0cb);
-    label.appendChild(slider);
-
-    // Tooltip bubble
-    const bubble = document.createElement('span');
-    bubble.className = 'tooltip-bubble';
-    bubble.textContent = "Load S0 profile when ALL Consoles are powered OFF";
-
-    tooltip.appendChild(label);
-    tooltip.appendChild(bubble);
-
-    // Add the switch (with tooltip) to the cell
-    tdEnableS0.appendChild(tooltip);
-
-    trS0.appendChild(tdEnableS0);
-
-
-    tbody.appendChild(trS0);
   }
 
-  async function saveConsoles() {
+  async function saveConsoles(){
     if (updatingConsoles) return;
     updatingConsoles = true;
 
@@ -1237,7 +3968,7 @@ void handleRoot() {
     try {
       const res = await fetch('/updateConsoles', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' }, // <--- important
         body: JSON.stringify(payload)
       });
 
@@ -1251,8 +3982,7 @@ void handleRoot() {
     updatingConsoles = false;
   }
 
-
-  async function addConsole() {
+  async function addConsole(){
     consoles.push({
       Desc: "Console Name",
       Address: "http://",
@@ -1263,11 +3993,11 @@ void handleRoot() {
     await saveConsoles();
     loadData();
   }
-  
-  async function deleteConsole(idx) { 
-    if (!confirm('Delete this console?')) return; 
 
-    consoles.splice(idx, 1); 
+  async function deleteConsole(idx) {
+    if (!confirm('Delete this console?')) return;
+
+    consoles.splice(idx, 1);
     await fetch('/updateConsoles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1289,6 +4019,8 @@ void handleRoot() {
       const tdName = document.createElement('td');
       const nameInput = document.createElement('input');
       nameInput.value = p[0];
+      nameInput.id = `profile_name_${idx}`;
+      nameInput.name = `profile_name_${idx}`;
       nameInput.onchange = async () => await saveProfiles();
       tdName.appendChild(nameInput);
       tr.appendChild(tdName);
@@ -1296,6 +4028,8 @@ void handleRoot() {
       const tdGameID = document.createElement('td');
       const gameidInput = document.createElement('input');
       gameidInput.value = p[1];
+      gameidInput.id = `profile_gameid_${idx}`;
+      gameidInput.name = `profile_gameid_${idx}`;
       gameidInput.onchange = async () => await saveProfiles();
       tdGameID.appendChild(gameidInput);
       tr.appendChild(tdGameID);
@@ -1304,6 +4038,8 @@ void handleRoot() {
       const valInput = document.createElement('input');
       valInput.type = 'number';
       valInput.value = p[2];
+      valInput.id = `profile_val_${idx}`;
+      valInput.name = `profile_val_${idx}`;
       valInput.onchange = async () => {
         await saveProfiles();
         highlightProfileRow();
@@ -1315,7 +4051,7 @@ void handleRoot() {
       const tdAction = document.createElement('td');
       const delBtn = document.createElement('button');
       delBtn.textContent = 'Delete';
-      delBtn.onclick = async () => await deleteProfile(idx);
+      delBtn.onclick = () => deleteProfile(idx);
       tdAction.appendChild(delBtn);
       tr.appendChild(tdAction);
 
@@ -1374,37 +4110,42 @@ void handleRoot() {
 
     highlightProfileRow();
     highlightConsoleProfiles();
+
   }
 
   // ---------------- SORTING ----------------
-  function sortProfiles(col) { 
-    if(currentSortCol===col) { 
-      currentSortDir=currentSortDir==='asc'?'desc':'asc'; 
-    } else { 
-      currentSortCol=col; 
-      currentSortDir='asc'; 
+  function sortProfiles(col) {
+    if (currentSortCol === col) {
+      currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      currentSortCol = col;
+      currentSortDir = 'asc';
     }
-    gameProfiles.sort((a,b) => { 
-      let va = a[col], vb = b[col]; 
-      if( !isNaN(va) && !isNaN(vb) ) { 
-        va = Number(va); 
-        vb = Number(vb); 
-      } else { 
-        va = va.toString().toLowerCase(); 
-        vb = vb.toString().toLowerCase(); 
-      } 
-      if (va < vb) return currentSortDir === 'asc'?-1:1; 
-      if (va > vb) return currentSortDir === 'asc'?1:-1; 
-      return 0; 
+    gameProfiles.sort((a, b) => {
+      let valA = a[col], valB = b[col];
+      if (!isNaN(valA) && !isNaN(valB)) {
+        valA = Number(valA);
+        valB = Number(valB);
+      } else {
+        valA = valA.toString().toLowerCase();
+        valB = valB.toString().toLowerCase();
+      }
+      if (valA < valB) return currentSortDir === 'asc' ? -1 : 1;
+      if (valA > valB) return currentSortDir === 'asc' ? 1 : -1;
+      return 0;
     });
-    renderProfiles(); 
+    renderProfiles();
     updateArrows();
   }
 
   function updateArrows() {
-    for (let i = 0; i < 3; i++) { 
-      const arrow=document.getElementById('arrow' + i); 
-      arrow.textContent = (i===currentSortCol)?(currentSortDir==='asc'?'▲':'▼'):'▲▼'; 
+    for (let i = 0; i < 3; i++) {
+      const arrow = document.getElementById('arrow' + i);
+      if (i === currentSortCol) {
+        arrow.textContent = currentSortDir === 'asc' ? '▲' : '▼';
+      } else {
+        arrow.textContent = '▲▼';
+      }
     }
   }
 
@@ -1462,18 +4203,69 @@ void handleRoot() {
     }
   }
 
-  // ---------------- S0 HANDLERS ----------------
-  function updateS0GameID(cb) { 
-    S0Vars['S0_gameID'] = cb.checked; 
-    saveS0Vars(); 
+  // ---------------- S0_gameID HANDLER ----------------
+  function updateS0GameID(cb) {
+    Vars['S0_gameID'] = cb.checked;
+    saveVars();
   }
 
-  function saveS0Vars() { 
-    fetch('/updateS0Vars',{
+  function saveVars() { 
+    fetch('/updateVars',{
       method:'POST',
-      body:JSON.stringify(S0Vars)
+      headers: { "Content-Type": "application/json" },
+      body:JSON.stringify(Vars)
     }); 
   }
+
+  // ---------------- Setting Page ----------------
+  function updateSettings() {
+      Vars["S0_gameID"] = document.getElementById("S0_gameID")?.checked || false;
+      Vars["S0"] = document.getElementById("S0_toggle").checked;
+      Vars["SRS"] = parseInt(document.getElementById("SRS_select").value, 10) || 0;
+      Vars["offset"] = parseInt(document.getElementById("offset_input").value, 10) || 0;
+      Vars["RT5Xir"] = parseInt(document.getElementById("RT5Xir_input").value, 10);
+      Vars["OSSCir"] = parseInt(document.getElementById("OSSCir_input").value, 10);
+      Vars["MTVir"] = parseInt(document.getElementById("MTVir_input").value, 10);
+      Vars["TESmartir"] = parseInt(document.getElementById("TESmartir_input").value, 10);
+      Vars["ExtronVideoOutputPortSW1"] = parseInt(document.getElementById("ExtronVideoOutputPortSW1_input")?.value, 10) || 0;
+      Vars["ExtronVideoOutputPortSW2"] = parseInt(document.getElementById("ExtronVideoOutputPortSW2_input")?.value, 10) || 0;
+      Vars["automatrixSW1"] = document.getElementById("automatrixSW1_toggle")?.checked || false;
+      Vars["automatrixSW2"] = document.getElementById("automatrixSW2_toggle")?.checked || false;
+      
+      let auxArray = [];
+      for (let i = 0; i < 12; i++) {
+        const el = document.getElementById("auxprof_" + i);
+        auxArray.push(el ? parseInt(el.value, 10) || 0 : 0);
+      }
+      Vars.auxprof = auxArray;
+
+      // Update Auto Matrix Mode
+      const vinModeSelect = document.getElementById("vinMatrixMode_select");
+      if (vinModeSelect) {
+          Vars.vinMatrix[0] = parseInt(vinModeSelect.value, 10) || 0;
+      }
+
+      // Update SW1 inputs (1-32)
+      for (let i = 0; i < 32; i++) {
+          const inputEl = document.getElementById(`vinSW1_input${i + 1}`);
+          if (inputEl) {
+              Vars.vinMatrix[1 + i] = parseInt(inputEl.value, 10) || 0;
+          }
+      }
+
+      // Update SW2 inputs (33-64)
+      for (let i = 0; i < 32; i++) {
+          const inputEl = document.getElementById(`vinSW2_input${i + 1}`);
+          if (inputEl) {
+              Vars.vinMatrix[33 + i] = parseInt(inputEl.value, 10) || 0;
+          }
+      }
+
+      saveVars();
+  }
+
+
+
 
   // ---------------- INITIALIZE ----------------
   loadData();
@@ -1495,7 +4287,6 @@ void handleRoot() {
         local.Enabled = remote.Enabled;
         local.King = remote.King;
         local.Prof = remote.Prof;
-        // You can add more fields if needed
       }
 
       // If new consoles were added or removed, replace the array
@@ -1518,7 +4309,7 @@ void handleRoot() {
     }
   }, 2500);
 
-  // ---------------- HIGHLIGHT FUNCTIONS ---------------- 
+  // ---------------- HIGHLIGHT FUNCTIONS ----------------
   function highlightProfileRow() {
     const rows = document.querySelectorAll('#profileTable tbody tr');
 
@@ -1599,6 +4390,200 @@ void handleRoot() {
     };
     reader.readAsText(file);
   }
+
+  function createSW1PresetsGrid() {
+      const grid = document.getElementById('SW1PresetsGrid');
+      if (!grid) return;
+
+      grid.innerHTML = ''; // clear existing
+
+      for (let i = 0; i < 32; i++) { // 0-based like auxprof[]
+          const wrapper = document.createElement('div');
+          wrapper.className = 'button-wrapper'; // same as Extra Remote Button Profiles
+          wrapper.style.textAlign = 'center';     // center the number and input
+
+          // Number label
+          const numberBox = document.createElement('div');
+          numberBox.className = 'button-number';
+          numberBox.textContent = i + 1; // 1–32
+
+          // Input box
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.min = 0;
+          input.max = 255;
+          input.value = Vars.vinMatrix?.[i + 1] ?? 33; // SW1 inputs are index 1–32
+          input.className = 'auxprof-input';
+          input.style.width = '40px';
+          input.style.height = '24px';
+          input.dataset.index = i + 1;
+
+          // Add unique id and name
+          input.id = `vinSW1_input${i + 1}`;
+          input.name = `vinSW1_input${i + 1}`;
+
+          // Update Vars and backend immediately
+          input.addEventListener('input', (e) => {
+              const idx = parseInt(e.target.dataset.index);
+              Vars.vinMatrix[idx] = parseInt(e.target.value) || 33;
+              updateSettings(); // backend updates immediately
+          });
+
+          wrapper.appendChild(numberBox);
+          wrapper.appendChild(input);
+          grid.appendChild(wrapper);
+      }
+  }
+
+  function createSW2PresetsGrid() {
+    const grid = document.getElementById('SW2PresetsGrid');
+    if (!grid) return;
+
+    grid.innerHTML = ''; // clear existing
+
+    for (let i = 0; i < 32; i++) { // 0-based
+        const wrapper = document.createElement('div');
+        wrapper.className = 'button-wrapper';
+        wrapper.style.textAlign = 'center';
+
+        // Number label
+        const numberBox = document.createElement('div');
+        numberBox.className = 'button-number';
+        numberBox.textContent = i + 1;
+
+        // Input box
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = 0;
+        input.max = 255;
+        input.value = Vars.vinMatrix?.[33 + i] ?? 33; // SW2 inputs are 33–64
+        input.className = 'auxprof-input';
+        input.style.width = '40px';
+        input.style.height = '24px';
+        input.dataset.index = 33 + i;
+        input.id = `vinSW2_input${i + 1}`;
+        input.name = `vinSW2_input${i + 1}`;
+
+        // Update Vars and backend immediately
+        input.addEventListener('input', (e) => {
+            const idx = parseInt(e.target.dataset.index);
+            Vars.vinMatrix[idx] = parseInt(e.target.value) || 33;
+            updateSettings(); // backend updates immediately
+        });
+
+        wrapper.appendChild(numberBox);
+        wrapper.appendChild(input);
+        grid.appendChild(wrapper);
+    }
+  }
+
+
+  document.addEventListener('DOMContentLoaded', () => {
+
+      // Create grids
+      createSW1PresetsGrid();
+      createSW2PresetsGrid();
+
+      // Load saved settings first (populates checkboxes and dropdown)
+      loadSettings();
+
+      // Get elements AFTER they exist
+      const autoSW1_toggle = document.getElementById("automatrixSW1_toggle");
+      const autoSW2_toggle = document.getElementById("automatrixSW2_toggle");
+      const sw1cont_toggle = document.getElementById("SW1PresetsContainer");
+      const sw2cont_toggle = document.getElementById("SW2PresetsContainer");
+      const vinModeSelect_toggle = document.getElementById("vinMatrixMode_select");
+
+      // Visibility logic
+      function updateAutoMatrixVisibility() {
+          // Auto Matrix Mode dropdown container
+          vinModeSelect_toggle.parentElement.parentElement.style.display =
+              "block"; // always show container, only hide grids
+
+          // SW1 grid
+          sw1cont_toggle.style.display =
+              (autoSW1_toggle.checked && parseInt(vinModeSelect_toggle.value, 10) === 1) ? "flex" : "none";
+
+          // SW2 grid
+          sw2cont_toggle.style.display =
+              (autoSW2_toggle.checked && parseInt(vinModeSelect_toggle.value, 10) === 1) ? "flex" : "none";
+      }
+
+      // Attach listeners
+      autoSW1_toggle.addEventListener("change", () => { updateSettings(); updateAutoMatrixVisibility(); });
+      autoSW2_toggle.addEventListener("change", () => { updateSettings(); updateAutoMatrixVisibility(); });
+      vinModeSelect_toggle.addEventListener("change", () => { updateSettings(); updateAutoMatrixVisibility(); });
+
+      // Run once after settings loaded
+      updateAutoMatrixVisibility();
+  });
+
+  document.addEventListener("DOMContentLoaded", function() {
+    const fileInput = document.getElementById("fwFile");
+    const uploadBtn = document.getElementById("fwUploadBtn");
+    const status = document.getElementById("fwStatus");
+
+    fileInput.addEventListener("change", function() {
+      uploadBtn.style.display = "none";
+      status.innerText = "";
+
+      if (!fileInput.files.length) return;
+
+      const file = fileInput.files[0];
+      if (!file.name.toLowerCase().endsWith(".bin")) {
+        status.innerText = "Invalid file type. Please select a .bin firmware file.";
+        status.style.color = "red";
+        fileInput.value = "";
+        return;
+      }
+
+      uploadBtn.style.display = "inline-block";
+      status.style.color = "";
+
+      // Scroll button into view
+      uploadBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+
+    document.getElementById("fwForm").addEventListener("submit", function(e) {
+      e.preventDefault();
+      if (!fileInput.files.length) return;
+
+      const formData = new FormData();
+      formData.append("update", fileInput.files[0]);
+
+      status.innerText = "Uploading... 0%";
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/update", true);
+
+      xhr.upload.onprogress = function(event) {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100);
+          status.innerText = "Uploading... " + percent + "%";
+        }
+      };
+
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          status.innerText = "Update complete. Rebooting...";
+          setTimeout(function checkESP() {
+            fetch("/")
+              .then(resp => { if (resp.ok) location.reload(); else setTimeout(checkESP, 1000); })
+              .catch(() => setTimeout(checkESP, 1000));
+          }, 3000);
+        } else {
+          status.innerText = "Update failed.";
+        }
+      };
+
+      xhr.onerror = function() {
+        status.innerText = "Upload error occurred.";
+      };
+
+      xhr.send(formData);
+    });
+  });
+
 
   </script>
 
